@@ -642,6 +642,10 @@ function render() {
     appendHeaderFooter(svg);
 
     renderSelectionOverlay();
+    if (cropState) {
+        const cropObj = getObj(cropState.id);
+        if (cropObj) renderCropOverlay(cropObj);
+    }
     renderSlidesPanel();
     scheduleAutosave();
 }
@@ -1856,28 +1860,126 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             // unbound "ns1:" prefix that browsers don't resolve as an image source.
             shape.setAttribute("href", obj.src);
 
-            // CSS filter adjustments (brightness/contrast/saturation/hue/sharpen/artistic)
+            // Non-destructive CSS/SVG filter pipeline — no pixel data is modified.
+            // Order: exposure → tone → colour → presence → artistic
             const imgFilters = [];
-            if (obj.imgBrightness !== undefined && obj.imgBrightness !== 100) imgFilters.push(`brightness(${obj.imgBrightness / 100})`);
-            if (obj.imgContrast !== undefined && obj.imgContrast !== 100) imgFilters.push(`contrast(${obj.imgContrast / 100})`);
-            if (obj.imgSaturation !== undefined && obj.imgSaturation !== 100) imgFilters.push(`saturate(${obj.imgSaturation / 100})`);
-            if (obj.imgHue) imgFilters.push(`hue-rotate(${obj.imgHue}deg)`);
-            if (obj.imgSharpen && obj.imgSharpen > 0) imgFilters.push(`contrast(${1 + obj.imgSharpen * 0.1}) brightness(${1 + obj.imgSharpen * 0.02})`);
-            if (obj.imgSharpen && obj.imgSharpen < 0) imgFilters.push(`blur(${Math.abs(obj.imgSharpen) * 0.4}px)`);
+
+            // Exposure
+            if (obj.imgBrightness !== undefined && obj.imgBrightness !== 100)
+                imgFilters.push(`brightness(${obj.imgBrightness / 100})`);
+            if (obj.imgContrast !== undefined && obj.imgContrast !== 100)
+                imgFilters.push(`contrast(${obj.imgContrast / 100})`);
+
+            // Tone (Lightroom-style)
+            if (obj.imgHighlights) {
+                const h = obj.imgHighlights / 100;
+                imgFilters.push(h > 0
+                    ? `brightness(${(1 + h * 0.28).toFixed(3)}) contrast(${(1 - h * 0.10).toFixed(3)})`
+                    : `brightness(${(1 + h * 0.15).toFixed(3)}) contrast(${(1 - h * 0.18).toFixed(3)})`);
+            }
+            if (obj.imgShadows) {
+                const s = obj.imgShadows / 100;
+                imgFilters.push(s > 0
+                    ? `brightness(${(1 + s * 0.18).toFixed(3)}) contrast(${(1 - s * 0.12).toFixed(3)})`
+                    : `brightness(${(1 + s * 0.10).toFixed(3)}) contrast(${(1 - s * 0.22).toFixed(3)})`);
+            }
+            if (obj.imgWhites) {
+                const w = obj.imgWhites / 100;
+                imgFilters.push(`brightness(${(1 + w * 0.20).toFixed(3)})`);
+            }
+            if (obj.imgBlacks) {
+                const b = obj.imgBlacks / 100;
+                imgFilters.push(b < 0
+                    ? `contrast(${(1 - b * 0.25).toFixed(3)}) brightness(${(1 + b * 0.06).toFixed(3)})`
+                    : `brightness(${(1 + b * 0.10).toFixed(3)}) contrast(${(1 - b * 0.12).toFixed(3)})`);
+            }
+
+            // White balance
+            if (obj.imgTemperature) {
+                const t = obj.imgTemperature / 100;
+                if (t > 0) {
+                    imgFilters.push(`sepia(${(t * 0.25).toFixed(3)})`);
+                    imgFilters.push(`saturate(${(1 + t * 0.35).toFixed(3)})`);
+                    imgFilters.push(`hue-rotate(${(-t * 14).toFixed(1)}deg)`);
+                } else {
+                    imgFilters.push(`saturate(${(1 + t * 0.20).toFixed(3)})`);
+                    imgFilters.push(`hue-rotate(${(-t * 14).toFixed(1)}deg)`);
+                }
+            }
+            if (obj.imgTint) {
+                const t = obj.imgTint / 100;
+                // positive = magenta, negative = green
+                imgFilters.push(`hue-rotate(${(t > 0 ? -t * 12 : -t * 50).toFixed(1)}deg)`);
+                imgFilters.push(`saturate(${(1 + Math.abs(t) * 0.15).toFixed(3)})`);
+            }
+
+            // Colour
+            if (obj.imgVibrance) {
+                // Vibrance: gentler than saturation, boosts muted colours more
+                imgFilters.push(`saturate(${(1 + obj.imgVibrance / 100 * 0.6).toFixed(3)})`);
+            }
+            if (obj.imgSaturation !== undefined && obj.imgSaturation !== 100)
+                imgFilters.push(`saturate(${obj.imgSaturation / 100})`);
+            if (obj.imgHue)
+                imgFilters.push(`hue-rotate(${obj.imgHue}deg)`);
+
+            // Presence
+            if (obj.imgClarity) {
+                const c = obj.imgClarity / 100;
+                imgFilters.push(`contrast(${(1 + c * 0.28).toFixed(3)})`);
+                if (c > 0) imgFilters.push(`saturate(${(1 + c * 0.12).toFixed(3)})`);
+            }
+
+            // Noise reduction (gentle blur)
+            if (obj.imgNoise && obj.imgNoise > 0)
+                imgFilters.push(`blur(${(obj.imgNoise * 0.12).toFixed(2)}px)`);
+
+            // Soften (negative sharpen)
+            if (obj.imgSharpen && obj.imgSharpen < 0)
+                imgFilters.push(`blur(${(Math.abs(obj.imgSharpen) * 0.35).toFixed(2)}px)`);
+
+            // Artistic presets
             const artisticFilters = {
-                grayscale: "grayscale(1)",
-                sepia: "sepia(0.8)",
-                invert: "invert(1)",
-                blur: "blur(3px)",
-                sharpen: "contrast(1.5) brightness(1.05)",
-                vintage: "sepia(0.4) contrast(0.9) brightness(0.9) saturate(1.3)",
-                cool: "hue-rotate(20deg) saturate(1.2) brightness(1.05)",
-                warm: "hue-rotate(-20deg) saturate(1.3) brightness(1.05)",
-                highcontrast: "contrast(2) brightness(0.9)",
-                pencil: "grayscale(1) contrast(1.8) brightness(1.2)",
+                grayscale:    "grayscale(1)",
+                sepia:        "sepia(0.8)",
+                invert:       "invert(1)",
+                blur:         "blur(4px)",
+                vintage:      "sepia(0.45) contrast(0.88) brightness(0.92) saturate(1.3) hue-rotate(-5deg)",
+                cool:         "hue-rotate(22deg) saturate(1.15) brightness(1.05)",
+                warm:         "sepia(0.2) hue-rotate(-18deg) saturate(1.3) brightness(1.05)",
+                highcontrast: "contrast(2.2) brightness(0.88)",
+                pencil:       "grayscale(1) contrast(1.9) brightness(1.15)",
+                matte:        "contrast(0.85) brightness(1.1) saturate(0.8)",
+                fade:         "contrast(0.8) brightness(1.15) saturate(0.7) sepia(0.1)",
+                chrome:       "grayscale(0.3) contrast(1.4) brightness(1.1) saturate(1.5)",
             };
-            if (obj.imgArtistic && artisticFilters[obj.imgArtistic]) imgFilters.push(artisticFilters[obj.imgArtistic]);
+            if (obj.imgArtistic && artisticFilters[obj.imgArtistic])
+                imgFilters.push(artisticFilters[obj.imgArtistic]);
+
             if (imgFilters.length) shape.style.filter = imgFilters.join(" ");
+
+            // Real unsharp-mask sharpen via SVG feConvolveMatrix.
+            // Wrapped in a <g> so it composes on top of the CSS filters above.
+            if (obj.imgSharpen && obj.imgSharpen > 0) {
+                const shpId = "img-sharpen-" + obj.id;
+                const shpFilt = document.createElementNS(svgNS, "filter");
+                shpFilt.setAttribute("id", shpId);
+                shpFilt.setAttribute("color-interpolation-filters", "sRGB");
+                const conv = document.createElementNS(svgNS, "feConvolveMatrix");
+                const s = Math.min(obj.imgSharpen / 5, 1);
+                conv.setAttribute("order", "3");
+                conv.setAttribute("kernelMatrix", `0 ${-s} 0 ${-s} ${1 + 4*s} ${-s} 0 ${-s} 0`);
+                conv.setAttribute("preserveAlpha", "true");
+                shpFilt.appendChild(conv);
+                defs.appendChild(shpFilt);
+                const shpG = document.createElementNS(svgNS, "g");
+                shpG.setAttribute("filter", `url(#${shpId})`);
+                shpG.appendChild(shape);
+                if (shape._picBorderRect) { shpG._picBorderRect = shape._picBorderRect; delete shape._picBorderRect; }
+                if (shape._vigRect) { shpG._vigRect = shape._vigRect; delete shape._vigRect; }
+                if (shape._grainRect) { shpG._grainRect = shape._grainRect; delete shape._grainRect; }
+                shape = shpG;
+            }
 
             // Crop via clipPath
             if (obj.imgCrop && (obj.imgCrop.top || obj.imgCrop.right || obj.imgCrop.bottom || obj.imgCrop.left)) {
@@ -1898,6 +2000,50 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
                 clip.appendChild(clipRect);
                 defs.appendChild(clip);
                 shape.setAttribute("clip-path", `url(#${cropId})`);
+            }
+
+            // Vignette — radial gradient rect overlaid on the image (pointer-events:none)
+            if (obj.imgVignette && obj.imgVignette > 0) {
+                const vigId = "img-vig-" + obj.id;
+                const vigGrad = document.createElementNS(svgNS, "radialGradient");
+                vigGrad.setAttribute("id", vigId);
+                vigGrad.setAttribute("cx", "50%"); vigGrad.setAttribute("cy", "50%");
+                vigGrad.setAttribute("r", "70%");
+                vigGrad.setAttribute("gradientUnits", "objectBoundingBox");
+                const vs1 = document.createElementNS(svgNS, "stop");
+                vs1.setAttribute("offset", "40%"); vs1.setAttribute("stop-color", "#000"); vs1.setAttribute("stop-opacity", "0");
+                const vs2 = document.createElementNS(svgNS, "stop");
+                vs2.setAttribute("offset", "100%"); vs2.setAttribute("stop-color", "#000"); vs2.setAttribute("stop-opacity", String((obj.imgVignette / 100 * 0.85).toFixed(3)));
+                vigGrad.appendChild(vs1); vigGrad.appendChild(vs2);
+                defs.appendChild(vigGrad);
+                shape._vigRect = document.createElementNS(svgNS, "rect");
+                applyAttrs(shape._vigRect, { x: obj.x, y: obj.y, width: obj.w, height: obj.h, fill: `url(#${vigId})`, "pointer-events": "none" });
+            }
+
+            // Grain — feTurbulence noise composited over the image
+            if (obj.imgGrain && obj.imgGrain > 0) {
+                const grId = "img-grain-" + obj.id;
+                const grFilt = document.createElementNS(svgNS, "filter");
+                grFilt.setAttribute("id", grId);
+                grFilt.setAttribute("x", "0%"); grFilt.setAttribute("y", "0%");
+                grFilt.setAttribute("width", "100%"); grFilt.setAttribute("height", "100%");
+                const turb = document.createElementNS(svgNS, "feTurbulence");
+                turb.setAttribute("type", "fractalNoise");
+                turb.setAttribute("baseFrequency", (0.55 + obj.imgGrain * 0.003).toFixed(3));
+                turb.setAttribute("numOctaves", "3");
+                turb.setAttribute("stitchTiles", "stitch");
+                turb.setAttribute("result", "noise");
+                const cm = document.createElementNS(svgNS, "feColorMatrix");
+                cm.setAttribute("in", "noise"); cm.setAttribute("type", "saturate"); cm.setAttribute("values", "0"); cm.setAttribute("result", "grayNoise");
+                const blend = document.createElementNS(svgNS, "feBlend");
+                blend.setAttribute("in", "SourceGraphic"); blend.setAttribute("in2", "grayNoise");
+                blend.setAttribute("mode", "overlay"); blend.setAttribute("result", "blended");
+                const comp = document.createElementNS(svgNS, "feComponentTransfer"); comp.setAttribute("in", "blended");
+                const fa = document.createElementNS(svgNS, "feFuncA"); fa.setAttribute("type", "linear"); fa.setAttribute("slope", "1"); comp.appendChild(fa);
+                grFilt.appendChild(turb); grFilt.appendChild(cm); grFilt.appendChild(blend); grFilt.appendChild(comp);
+                defs.appendChild(grFilt);
+                shape._grainRect = document.createElementNS(svgNS, "rect");
+                applyAttrs(shape._grainRect, { x: obj.x, y: obj.y, width: obj.w, height: obj.h, fill: "transparent", filter: `url(#${grId})`, "pointer-events": "none" });
             }
 
             // Picture border: stored for post-processing after shape is added to g
@@ -2122,6 +2268,10 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
         filterTarget.appendChild(shape._picBorderRect);
         delete shape._picBorderRect;
     }
+    // Vignette overlay rect
+    if (shape._vigRect) { filterTarget.appendChild(shape._vigRect); delete shape._vigRect; }
+    // Grain overlay rect
+    if (shape._grainRect) { filterTarget.appendChild(shape._grainRect); delete shape._grainRect; }
 
     if (obj.type === "text" && obj.isCode) {
         const badge = getCodeBadge(obj.codeLang);
@@ -2306,6 +2456,104 @@ function renderSelectionOverlay() {
             svg.appendChild(box);
         });
     }
+}
+
+// ============ Visual Crop Mode ============
+let cropState = null; // { id, edge: 'top'|'right'|'bottom'|'left'|null, startPt, startCrop }
+
+function enterCropMode(objId) {
+    const obj = getObj(objId);
+    cropState = {
+        id: objId, edge: null,
+        originalCrop: obj ? JSON.parse(JSON.stringify(obj.imgCrop || {})) : {}
+    };
+    document.getElementById("picCropDoneBtn").style.display = "";
+    document.getElementById("picCropCancelBtn").style.display = "";
+    document.getElementById("picVisualCropBtn").style.display = "none";
+    canvasArea.style.cursor = "crosshair";
+    render();
+}
+
+function exitCropMode(apply) {
+    if (!cropState) return;
+    if (!apply) {
+        const obj = getObj(cropState.id);
+        if (obj) obj.imgCrop = cropState.originalCrop;
+    }
+    cropState = null;
+    document.getElementById("picCropDoneBtn").style.display = "none";
+    document.getElementById("picCropCancelBtn").style.display = "none";
+    document.getElementById("picVisualCropBtn").style.display = "";
+    canvasArea.style.cursor = "";
+    render();
+}
+
+function renderCropOverlay(obj) {
+    const inv = 1 / (currentScale || 1);
+    const crop = obj.imgCrop || { top: 0, right: 0, bottom: 0, left: 0 };
+    const cl = (crop.left || 0) / 100 * obj.w;
+    const ct = (crop.top || 0) / 100 * obj.h;
+    const cr = (crop.right || 0) / 100 * obj.w;
+    const cb = (crop.bottom || 0) / 100 * obj.h;
+
+    const x1 = obj.x + cl, y1 = obj.y + ct;
+    const x2 = obj.x + obj.w - cr, y2 = obj.y + obj.h - cb;
+
+    // Darken cropped-away areas
+    const darkenStyle = "fill:rgba(0,0,0,0.45);pointer-events:none";
+    function addDark(x, y, w, h) {
+        if (w <= 0 || h <= 0) return;
+        const r = document.createElementNS(svgNS, "rect");
+        applyAttrs(r, { x, y, width: w, height: h });
+        r.setAttribute("style", darkenStyle);
+        svg.appendChild(r);
+    }
+    addDark(obj.x, obj.y, obj.w, ct);           // top
+    addDark(obj.x, y2, obj.w, cb);               // bottom
+    addDark(obj.x, y1, cl, y2 - y1);             // left
+    addDark(x2, y1, cr, y2 - y1);                // right
+
+    // Crop boundary rect
+    const bdr = document.createElementNS(svgNS, "rect");
+    applyAttrs(bdr, { x: x1, y: y1, width: x2 - x1, height: y2 - y1 });
+    bdr.style.cssText = "fill:none;stroke:#fff;stroke-width:" + (1.5 * inv) + ";pointer-events:none";
+    svg.appendChild(bdr);
+    // Rule-of-thirds grid lines
+    for (let i = 1; i < 3; i++) {
+        const vl = document.createElementNS(svgNS, "line");
+        applyAttrs(vl, { x1: x1 + (x2-x1)*i/3, y1: y1, x2: x1 + (x2-x1)*i/3, y2 });
+        vl.style.cssText = "stroke:rgba(255,255,255,0.4);stroke-width:" + inv;
+        svg.appendChild(vl);
+        const hl = document.createElementNS(svgNS, "line");
+        applyAttrs(hl, { x1, y1: y1 + (y2-y1)*i/3, x2, y2: y1 + (y2-y1)*i/3 });
+        hl.style.cssText = "stroke:rgba(255,255,255,0.4);stroke-width:" + inv;
+        svg.appendChild(hl);
+    }
+
+    // Edge drag handles (invisible wide hit-zone + visible line)
+    const hs = 8 * inv; // half hit-width
+    const handles = [
+        { edge: "top",    x: x1, y: y1 - hs, w: x2-x1, h: hs*2, cursor: "n-resize" },
+        { edge: "bottom", x: x1, y: y2 - hs, w: x2-x1, h: hs*2, cursor: "s-resize" },
+        { edge: "left",   x: x1 - hs, y: y1, w: hs*2, h: y2-y1, cursor: "w-resize" },
+        { edge: "right",  x: x2 - hs, y: y1, w: hs*2, h: y2-y1, cursor: "e-resize" },
+    ];
+    handles.forEach(h => {
+        const r = document.createElementNS(svgNS, "rect");
+        applyAttrs(r, { x: h.x, y: h.y, width: h.w, height: h.h });
+        r.style.cssText = "fill:transparent;cursor:" + h.cursor;
+        r.dataset.cropEdge = h.edge;
+        svg.appendChild(r);
+    });
+
+    // Corner handles
+    const cs = 6 * inv;
+    [[x1, y1], [x2, y1], [x1, y2], [x2, y2]].forEach(([cx, cy]) => {
+        const c = document.createElementNS(svgNS, "rect");
+        applyAttrs(c, { x: cx - cs/2, y: cy - cs/2, width: cs, height: cs });
+        c.style.cssText = "fill:#fff;stroke:#333;stroke-width:" + (0.8*inv) + ";pointer-events:none";
+        svg.appendChild(c);
+    });
 }
 
 // ============ Slides panel ============
@@ -4812,6 +5060,21 @@ svg.addEventListener("mousedown", (e) => {
     const pt = svgPoint(e);
     const target = e.target;
 
+    // Crop mode: handle edge dragging
+    if (cropState) {
+        const edge = target.dataset && target.dataset.cropEdge;
+        if (edge) {
+            const obj = getObj(cropState.id);
+            if (obj) {
+                cropState.edge = edge;
+                cropState.startPt = { x: pt.x, y: pt.y };
+                cropState.startCrop = Object.assign({ top: 0, right: 0, bottom: 0, left: 0 }, obj.imgCrop || {});
+                e.preventDefault(); e.stopPropagation();
+            }
+        }
+        return;
+    }
+
     closeAllDropdowns();
     closeTextContextMenu();
 
@@ -5129,6 +5392,37 @@ window.addEventListener("mousemove", (e) => {
         return;
     }
 
+    // Crop mode drag
+    if (cropState && cropState.edge) {
+        const obj = getObj(cropState.id);
+        if (obj) {
+            const pt = svgPoint(e);
+            const dx = pt.x - cropState.startPt.x;
+            const dy = pt.y - cropState.startPt.y;
+            const sc = cropState.startCrop;
+            const crop = Object.assign({}, sc);
+            const MARGIN = 5; // minimum crop in %
+            if (cropState.edge === "top") {
+                crop.top = Math.max(0, Math.min(100 - MARGIN - sc.bottom, sc.top + (dy / obj.h) * 100));
+            } else if (cropState.edge === "bottom") {
+                crop.bottom = Math.max(0, Math.min(100 - MARGIN - sc.top, sc.bottom - (dy / obj.h) * 100));
+            } else if (cropState.edge === "left") {
+                crop.left = Math.max(0, Math.min(100 - MARGIN - sc.right, sc.left + (dx / obj.w) * 100));
+            } else if (cropState.edge === "right") {
+                crop.right = Math.max(0, Math.min(100 - MARGIN - sc.left, sc.right - (dx / obj.w) * 100));
+            }
+            crop.top = Math.round(crop.top); crop.bottom = Math.round(crop.bottom);
+            crop.left = Math.round(crop.left); crop.right = Math.round(crop.right);
+            obj.imgCrop = crop;
+            document.getElementById("picCropTop").value = crop.top;
+            document.getElementById("picCropRight").value = crop.right;
+            document.getElementById("picCropBottom").value = crop.bottom;
+            document.getElementById("picCropLeft").value = crop.left;
+            render();
+        }
+        return;
+    }
+
     if (!drag) return;
     const pt = svgPoint(e);
 
@@ -5280,6 +5574,14 @@ window.addEventListener("mousemove", (e) => {
 });
 
 window.addEventListener("mouseup", (e) => {
+    // Crop mode: end drag
+    if (cropState && cropState.edge) {
+        cropState.edge = null;
+        cropState.startPt = null;
+        cropState.startCrop = null;
+        pushHistory(true);
+        return;
+    }
     // Freeform pen: finalize the point on mouseup (smooth if dragged, corner otherwise)
     if (penDraw && penDraw.buttonDown) {
         const pu = svgPoint(e);
@@ -7814,6 +8116,24 @@ function updateFormatPictureTab() {
     document.getElementById("picSaturationVal").textContent = (obj.imgSaturation ?? 100) + "%";
     document.getElementById("picHueSlider").value = obj.imgHue ?? 0;
     document.getElementById("picHueVal").textContent = (obj.imgHue ?? 0) + "°";
+    // Tone sliders
+    function syncSlider(id, valId, val, fmt) {
+        const el = document.getElementById(id); const vl = document.getElementById(valId);
+        if (el) el.value = val ?? 0;
+        if (vl) vl.textContent = fmt ? fmt(val ?? 0) : (val ?? 0);
+    }
+    const signFmt = v => (v > 0 ? "+" : "") + v;
+    syncSlider("picHighlightsSlider","picHighlightsVal", obj.imgHighlights, signFmt);
+    syncSlider("picShadowsSlider",   "picShadowsVal",   obj.imgShadows,    signFmt);
+    syncSlider("picWhitesSlider",    "picWhitesVal",    obj.imgWhites,     signFmt);
+    syncSlider("picBlacksSlider",    "picBlacksVal",    obj.imgBlacks,     signFmt);
+    syncSlider("picClaritySlider",   "picClarityVal",   obj.imgClarity,    signFmt);
+    syncSlider("picTempSlider",      "picTempVal",      obj.imgTemperature,signFmt);
+    syncSlider("picTintSlider",      "picTintVal",      obj.imgTint,       signFmt);
+    syncSlider("picVibranceSlider",  "picVibranceVal",  obj.imgVibrance,   signFmt);
+    syncSlider("picVignetteSlider",  "picVignetteVal",  obj.imgVignette,   v => v);
+    syncSlider("picGrainSlider",     "picGrainVal",     obj.imgGrain,      v => v);
+    syncSlider("picNoiseSlider",     "picNoiseVal",     obj.imgNoise,      v => v);
     document.getElementById("picOpacitySlider").value = obj.opacity ?? 100;
     document.getElementById("picOpacityVal").textContent = (obj.opacity ?? 100) + "%";
     document.getElementById("picBorderColorInput").value = obj.picBorderColor || "#000000";
@@ -7947,6 +8267,48 @@ picHueSlider.oninput = () => {
 };
 picHueSlider.onchange = () => pushHistory(true);
 
+// ---- Tone: Highlights / Shadows / Whites / Blacks ----
+function makeSimpleSlider(id, valId, prop, fmt) {
+    const sl = document.getElementById(id);
+    const vl = document.getElementById(valId);
+    if (!sl || !vl) return;
+    sl.oninput = () => { vl.textContent = fmt(sl.value); applyToPicTargetsLive(o => o[prop] = parseFloat(sl.value)); };
+    sl.onchange = () => pushHistory(true);
+}
+makeSimpleSlider("picHighlightsSlider", "picHighlightsVal", "imgHighlights", v => (v > 0 ? "+" : "") + v);
+makeSimpleSlider("picShadowsSlider",    "picShadowsVal",    "imgShadows",    v => (v > 0 ? "+" : "") + v);
+makeSimpleSlider("picWhitesSlider",     "picWhitesVal",     "imgWhites",     v => (v > 0 ? "+" : "") + v);
+makeSimpleSlider("picBlacksSlider",     "picBlacksVal",     "imgBlacks",     v => (v > 0 ? "+" : "") + v);
+makeSimpleSlider("picClaritySlider",    "picClarityVal",    "imgClarity",    v => (v > 0 ? "+" : "") + v);
+
+// ---- White Balance: Temperature / Tint ----
+makeSimpleSlider("picTempSlider",    "picTempVal",    "imgTemperature", v => (v > 0 ? "+" : "") + v);
+makeSimpleSlider("picTintSlider",    "picTintVal",    "imgTint",        v => (v > 0 ? "+" : "") + v);
+makeSimpleSlider("picVibranceSlider","picVibranceVal","imgVibrance",    v => (v > 0 ? "+" : "") + v);
+
+// ---- Artistic: Vignette / Grain / Noise ----
+makeSimpleSlider("picVignetteSlider","picVignetteVal","imgVignette",   v => v);
+makeSimpleSlider("picGrainSlider",   "picGrainVal",   "imgGrain",      v => v);
+makeSimpleSlider("picNoiseSlider",   "picNoiseVal",   "imgNoise",      v => v);
+
+// ---- Rotate & Flip (ribbon large buttons) ----
+document.getElementById("picFlipHRibbonBtn").addEventListener("click", () => {
+    const targets = picTargets(); if (!targets.length) return;
+    pushHistory(true); applyToAll(targets, flipObjectScreenH); render();
+});
+document.getElementById("picFlipVRibbonBtn").addEventListener("click", () => {
+    const targets = picTargets(); if (!targets.length) return;
+    pushHistory(true); applyToAll(targets, flipObjectScreenV); render();
+});
+document.getElementById("picRotateCWBtn").addEventListener("click", () => {
+    applyToPicTargets(o => { o.rotation = ((o.rotation || 0) + 90) % 360; });
+    updateFormatPictureTab();
+});
+document.getElementById("picRotateCCWBtn").addEventListener("click", () => {
+    applyToPicTargets(o => { o.rotation = ((o.rotation || 0) - 90 + 360) % 360; });
+    updateFormatPictureTab();
+});
+
 document.querySelectorAll(".pic-recolor-opt[data-recolor]").forEach(btn => {
     btn.addEventListener("click", () => {
         const val = btn.dataset.recolor;
@@ -8033,24 +8395,25 @@ document.getElementById("picChangeLinkBtn").addEventListener("click", () => {
 });
 
 // ---- Manage: Reset Picture ----
+function resetImageProps(o) {
+    delete o.imgBrightness; delete o.imgContrast; delete o.imgSaturation;
+    delete o.imgHue; delete o.imgSharpen; delete o.imgArtistic;
+    delete o.imgHighlights; delete o.imgShadows; delete o.imgWhites; delete o.imgBlacks;
+    delete o.imgClarity; delete o.imgTemperature; delete o.imgTint; delete o.imgVibrance;
+    delete o.imgVignette; delete o.imgGrain; delete o.imgNoise;
+    delete o.imgCrop;
+    delete o.picBorderWidth; delete o.picBorderColor; delete o.picBorderStyle;
+}
+
 document.getElementById("picResetImageBtn").addEventListener("click", () => {
-    applyToPicTargets(o => {
-        delete o.imgBrightness; delete o.imgContrast; delete o.imgSaturation;
-        delete o.imgHue; delete o.imgSharpen; delete o.imgArtistic;
-        delete o.imgCrop;
-        delete o.picBorderWidth; delete o.picBorderColor; delete o.picBorderStyle;
-    });
+    applyToPicTargets(o => resetImageProps(o));
     closePicMenus();
     updateFormatPictureTab();
 });
 
 document.getElementById("picResetSizeBtn").addEventListener("click", () => {
     applyToPicTargets(o => {
-        delete o.imgBrightness; delete o.imgContrast; delete o.imgSaturation;
-        delete o.imgHue; delete o.imgSharpen; delete o.imgArtistic;
-        delete o.imgCrop;
-        delete o.picBorderWidth; delete o.picBorderColor; delete o.picBorderStyle;
-        // Reset to 200x200 default if we can't know original dimensions
+        resetImageProps(o);
         o.w = 200; o.h = 200;
     });
     closePicMenus();
@@ -8367,6 +8730,25 @@ document.getElementById("picRotationInput").addEventListener("change", (e) => {
     applyToPicTargets(o => o.rotation = val);
     closePicMenus();
     updateFormatPictureTab();
+});
+
+// ---- Visual Crop button ----
+document.getElementById("picVisualCropBtn").addEventListener("click", () => {
+    const targets = picTargets();
+    if (!targets.length) return;
+    closePicMenus();
+    enterCropMode(targets[0].id);
+});
+document.getElementById("picCropDoneBtn").addEventListener("click", () => {
+    exitCropMode(true);
+    updateFormatPictureTab();
+});
+document.getElementById("picCropCancelBtn").addEventListener("click", () => {
+    if (cropState) {
+        const obj = getObj(cropState.id);
+        if (obj && cropState.originalCrop !== undefined) obj.imgCrop = cropState.originalCrop;
+    }
+    exitCropMode(false);
 });
 
 // ---- Crop ----
@@ -9041,18 +9423,41 @@ function scrollToSelection() {
     canvasArea.scrollTo({ left: px - canvasArea.clientWidth / 2, top: py - canvasArea.clientHeight / 2, behavior: "smooth" });
 }
 
-document.getElementById("zoomInBtn").onclick = () => { state.zoom = Math.min(20,+(state.zoom + 0.1).toFixed(2)); applyZoom(); scrollToSelection(); };
-document.getElementById("zoomOutBtn").onclick = () => { state.zoom = Math.max(0.25, +(state.zoom - 0.1).toFixed(2)); applyZoom(); scrollToSelection(); };
+document.getElementById("zoomInBtn").onclick = () => { state.zoom = Math.min(20, Math.round((state.zoom + 0.05) * 1000) / 1000); applyZoom(); scrollToSelection(); };
+document.getElementById("zoomOutBtn").onclick = () => { state.zoom = Math.max(0.05, Math.round((state.zoom - 0.05) * 1000) / 1000); applyZoom(); scrollToSelection(); };
 document.getElementById("zoomResetBtn").onclick = () => { state.zoom = 1; applyZoom(); scrollToSelection(); };
-document.getElementById("zoomSlider").oninput = (e) => { state.zoom = +(e.target.value / 100).toFixed(2); applyZoom(); scrollToSelection(); };
+document.getElementById("zoomSlider").oninput = (e) => { state.zoom = e.target.value / 100; applyZoom(); scrollToSelection(); };
 
 // Trackpad pinch-zoom / Ctrl+scroll-wheel zoom over the canvas area.
+// Uses rAF throttling so multiple wheel events per frame are batched into one render.
+let _zoomRAF = null;
+let _zoomDebounce = null;
 canvasArea.addEventListener("wheel", (e) => {
     if (!e.ctrlKey) return;
     e.preventDefault();
-    const factor = Math.exp(-e.deltaY * 0.002);
-    state.zoom = Math.min(20,Math.max(0.25, +(state.zoom * factor).toFixed(3)));
-    applyZoom();
+    const factor = Math.exp(-e.deltaY * 0.0015);
+    state.zoom = Math.min(20, Math.max(0.25, state.zoom * factor));
+
+    // Immediate CSS-scale preview (no DOM rebuild — GPU-composited)
+    const padding = 32;
+    const availW = Math.max(canvasArea.clientWidth - padding, 50);
+    const availH = Math.max(canvasArea.clientHeight - padding, 50);
+    const fitScale = Math.min(availW / (SLIDE_W + CANVAS_MARGIN * 2), availH / (SLIDE_H + CANVAS_MARGIN * 2), 1);
+    const cs = fitScale * state.zoom;
+    const w = (SLIDE_W + CANVAS_MARGIN * 2) * cs;
+    const h = (SLIDE_H + CANVAS_MARGIN * 2) * cs;
+    canvasWrap.style.width = w + "px";
+    canvasWrap.style.height = h + "px";
+    svg.style.width = w + "px";
+    svg.style.height = h + "px";
+    document.getElementById("zoomLevel").textContent = Math.round(state.zoom * 100) + "%";
+    document.getElementById("zoomSlider").value = Math.round(state.zoom * 100);
+
+    // Debounce the full render (handles rescale) until the gesture settles
+    clearTimeout(_zoomDebounce);
+    _zoomDebounce = setTimeout(() => {
+        applyZoom();
+    }, 80);
 }, { passive: false });
 
 // ============ Undo / Redo buttons ============

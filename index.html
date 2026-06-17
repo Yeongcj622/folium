@@ -493,6 +493,30 @@
       <line x1="16" y1="12" x2="20" y2="12" opacity="0.5"/>
       <rect x="2" y="2" width="9" height="20" rx="1.5" fill="none" stroke-opacity="0.35"/>
     </symbol>
+    <symbol id="icon-flip-h" viewBox="0 0 24 24">
+      <path d="M3 12h7V5l-7 7zm0 0h7v7l-7-7z" opacity="0.4"/>
+      <line x1="12" y1="4" x2="12" y2="20" stroke-width="2" stroke-dasharray="2 2"/>
+      <path d="M21 12h-7V5l7 7zm0 0h-7v7l7-7z"/>
+    </symbol>
+    <symbol id="icon-flip-v" viewBox="0 0 24 24">
+      <path d="M12 3v7H5l7-7zm0 0v7h7L12 3z" opacity="0.4"/>
+      <line x1="4" y1="12" x2="20" y2="12" stroke-width="2" stroke-dasharray="2 2"/>
+      <path d="M12 21v-7H5l7 7zm0 0v-7h7l-7 7z"/>
+    </symbol>
+    <symbol id="icon-rotate-cw" viewBox="0 0 24 24">
+      <path d="M17.65 6.35A7.958 7.958 0 0012 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0112 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/>
+    </symbol>
+    <symbol id="icon-rotate-ccw" viewBox="0 0 24 24">
+      <path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/>
+    </symbol>
+    <symbol id="icon-vignette" viewBox="0 0 24 24">
+      <rect x="2" y="2" width="20" height="20" rx="2" fill="none"/>
+      <radialGradient id="_vig_grad" cx="50%" cy="50%" r="50%">
+        <stop offset="30%" stop-color="currentColor" stop-opacity="0"/>
+        <stop offset="100%" stop-color="currentColor" stop-opacity="0.7"/>
+      </radialGradient>
+      <rect x="2" y="2" width="20" height="20" rx="2" fill="url(#_vig_grad)"/>
+    </symbol>
     <!-- Edit Table tab icons -->
     <symbol id="icon-tbl-add-row" viewBox="0 0 24 24">
       <rect x="2.5" y="2.5" width="19" height="12" rx="1"/>
@@ -1271,10 +1295,16 @@
                 </button>
                 <div class="ribbon-dropdown-menu pic-adj-menu" id="picCorrectionsMenu" style="display:none">
                     <div class="pic-adj-section">Sharpen / Soften</div>
-                    <div class="pic-adj-row"><label>Sharpen</label><input type="range" id="picSharpenSlider" min="-5" max="5" step="0.5" value="0"><span id="picSharpenVal">0</span></div>
-                    <div class="pic-adj-section">Brightness / Contrast</div>
-                    <div class="pic-adj-row"><label>Brightness</label><input type="range" id="picBrightnessSlider" min="0" max="200" step="5" value="100"><span id="picBrightnessVal">100%</span></div>
+                    <div class="pic-adj-row"><label>Texture</label><input type="range" id="picSharpenSlider" min="-5" max="5" step="0.5" value="0"><span id="picSharpenVal">0</span></div>
+                    <div class="pic-adj-section">Exposure</div>
+                    <div class="pic-adj-row"><label>Exposure</label><input type="range" id="picBrightnessSlider" min="0" max="200" step="5" value="100"><span id="picBrightnessVal">100%</span></div>
                     <div class="pic-adj-row"><label>Contrast</label><input type="range" id="picContrastSlider" min="0" max="200" step="5" value="100"><span id="picContrastVal">100%</span></div>
+                    <div class="pic-adj-row"><label>Highlights</label><input type="range" id="picHighlightsSlider" min="-100" max="100" step="5" value="0"><span id="picHighlightsVal">0</span></div>
+                    <div class="pic-adj-row"><label>Shadows</label><input type="range" id="picShadowsSlider" min="-100" max="100" step="5" value="0"><span id="picShadowsVal">0</span></div>
+                    <div class="pic-adj-row"><label>Whites</label><input type="range" id="picWhitesSlider" min="-100" max="100" step="5" value="0"><span id="picWhitesVal">0</span></div>
+                    <div class="pic-adj-row"><label>Blacks</label><input type="range" id="picBlacksSlider" min="-100" max="100" step="5" value="0"><span id="picBlacksVal">0</span></div>
+                    <div class="pic-adj-section">Presence</div>
+                    <div class="pic-adj-row"><label>Clarity</label><input type="range" id="picClaritySlider" min="-100" max="100" step="5" value="0"><span id="picClarityVal">0</span></div>
                 </div>
             </div>
             <div class="ribbon-dropdown pic-adj-dropdown">
@@ -1283,7 +1313,11 @@
                     <span class="ribbon-label">Colour &#9662;</span>
                 </button>
                 <div class="ribbon-dropdown-menu pic-adj-menu" id="picColourMenu" style="display:none">
-                    <div class="pic-adj-section">Colour Saturation</div>
+                    <div class="pic-adj-section">White Balance</div>
+                    <div class="pic-adj-row"><label>Temp</label><input type="range" id="picTempSlider" min="-100" max="100" step="5" value="0"><span id="picTempVal">0</span></div>
+                    <div class="pic-adj-row"><label>Tint</label><input type="range" id="picTintSlider" min="-100" max="100" step="5" value="0"><span id="picTintVal">0</span></div>
+                    <div class="pic-adj-section">Colour</div>
+                    <div class="pic-adj-row"><label>Vibrance</label><input type="range" id="picVibranceSlider" min="-100" max="100" step="5" value="0"><span id="picVibranceVal">0</span></div>
                     <div class="pic-adj-row"><label>Saturation</label><input type="range" id="picSaturationSlider" min="0" max="200" step="5" value="100"><span id="picSaturationVal">100%</span></div>
                     <div class="pic-adj-section">Colour Tone</div>
                     <div class="pic-adj-row"><label>Hue Shift</label><input type="range" id="picHueSlider" min="-180" max="180" step="10" value="0"><span id="picHueVal">0°</span></div>
@@ -1302,14 +1336,21 @@
                         <svg class="ribbon-svg-icon"><use href="#icon-pic-artistic"/></svg> Artistic &#9662;
                     </button>
                     <div class="ribbon-dropdown-menu pic-adj-menu" id="picArtisticMenu" style="display:none">
+                        <div class="pic-adj-section">Effects</div>
+                        <div class="pic-adj-row"><label>Vignette</label><input type="range" id="picVignetteSlider" min="0" max="100" step="5" value="0"><span id="picVignetteVal">0</span></div>
+                        <div class="pic-adj-row"><label>Grain</label><input type="range" id="picGrainSlider" min="0" max="100" step="5" value="0"><span id="picGrainVal">0</span></div>
+                        <div class="pic-adj-row"><label>Noise Red.</label><input type="range" id="picNoiseSlider" min="0" max="10" step="0.5" value="0"><span id="picNoiseVal">0</span></div>
+                        <div class="pic-adj-section">Artistic Presets</div>
                         <button class="pic-artistic-opt" data-artistic="none">None</button>
                         <button class="pic-artistic-opt" data-artistic="blur">Blur</button>
-                        <button class="pic-artistic-opt" data-artistic="sharpen">Sharpen</button>
                         <button class="pic-artistic-opt" data-artistic="vintage">Vintage</button>
                         <button class="pic-artistic-opt" data-artistic="cool">Cool</button>
                         <button class="pic-artistic-opt" data-artistic="warm">Warm</button>
                         <button class="pic-artistic-opt" data-artistic="highcontrast">High Contrast</button>
                         <button class="pic-artistic-opt" data-artistic="pencil">Pencil Sketch</button>
+                        <button class="pic-artistic-opt" data-artistic="matte">Matte</button>
+                        <button class="pic-artistic-opt" data-artistic="fade">Faded Film</button>
+                        <button class="pic-artistic-opt" data-artistic="chrome">Chrome</button>
                     </div>
                 </div>
                 <div class="ribbon-dropdown pic-adj-dropdown">
@@ -1362,6 +1403,28 @@
             </div>
         </div>
         <div class="ribbon-group-label">Manage</div>
+    </div>
+    <!-- Rotate & Flip group -->
+    <div class="ribbon-group">
+        <div class="ribbon-group-buttons">
+            <button class="ribbon-btn-large" id="picFlipHRibbonBtn" title="Flip Horizontal">
+                <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-flip-h"/></svg></span>
+                <span class="ribbon-label">Flip<br>Horizontal</span>
+            </button>
+            <button class="ribbon-btn-large" id="picFlipVRibbonBtn" title="Flip Vertical">
+                <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-flip-v"/></svg></span>
+                <span class="ribbon-label">Flip<br>Vertical</span>
+            </button>
+            <button class="ribbon-btn-large" id="picRotateCWBtn" title="Rotate 90° Clockwise">
+                <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-rotate-cw"/></svg></span>
+                <span class="ribbon-label">Rotate<br>CW</span>
+            </button>
+            <button class="ribbon-btn-large" id="picRotateCCWBtn" title="Rotate 90° Counter-Clockwise">
+                <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-rotate-ccw"/></svg></span>
+                <span class="ribbon-label">Rotate<br>CCW</span>
+            </button>
+        </div>
+        <div class="ribbon-group-label">Rotate &amp; Flip</div>
     </div>
     <!-- Picture Styles group -->
     <div class="ribbon-group">
@@ -1497,10 +1560,22 @@
     <!-- Crop group -->
     <div class="ribbon-group">
         <div class="ribbon-group-buttons">
+            <button class="ribbon-btn-large" id="picVisualCropBtn" title="Drag crop handles directly on the image">
+                <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-pic-crop"/></svg></span>
+                <span class="ribbon-label">Crop<br>Image</span>
+            </button>
+            <button class="ribbon-btn-large" id="picCropDoneBtn" title="Apply crop" style="display:none;background:#e6f7e6">
+                <span class="ribbon-icon">&#10003;</span>
+                <span class="ribbon-label">Done</span>
+            </button>
+            <button class="ribbon-btn-large" id="picCropCancelBtn" title="Cancel crop" style="display:none">
+                <span class="ribbon-icon">&#10005;</span>
+                <span class="ribbon-label">Cancel</span>
+            </button>
             <div class="ribbon-dropdown pic-adj-dropdown">
-                <button class="ribbon-btn-large" id="picCropBtn" title="Crop">
+                <button class="ribbon-btn-large" id="picCropBtn" title="Set crop by percentage">
                     <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-pic-crop"/></svg></span>
-                    <span class="ribbon-label">Crop &#9662;</span>
+                    <span class="ribbon-label">Crop % &#9662;</span>
                 </button>
                 <div class="ribbon-dropdown-menu pic-adj-menu" id="picCropMenu" style="display:none">
                     <div class="pic-adj-section">Crop (% from edge)</div>
