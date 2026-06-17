@@ -9444,7 +9444,7 @@ canvasArea.addEventListener("wheel", (e) => {
     if (!e.ctrlKey) return;
     e.preventDefault();
 
-    const factor = Math.exp(-e.deltaY * 0.001);
+    const factor = Math.exp(-e.deltaY * 0.008);
     state.zoom = Math.min(20, Math.max(0.05, state.zoom * factor));
 
     // Capture base dimensions once per gesture (before any transform has been applied)
