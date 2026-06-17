@@ -2583,3 +2583,135 @@ body {
     display: block;
     overflow: visible;
 }
+
+/* ============ Background Removal Modal ============ */
+#bgrModal {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    flex-direction: column;
+    background: #1a1f25;
+}
+#bgrModal.active { display: flex; }
+
+#bgrToolbar {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    padding: 0.5rem 1rem;
+    background: #252d36;
+    border-bottom: 1px solid #3a4450;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    min-height: 3rem;
+}
+.bgr-title {
+    font-size: 0.88rem;
+    font-weight: 700;
+    color: rgba(255,255,255,0.9);
+    white-space: nowrap;
+    letter-spacing: 0.01em;
+}
+.bgr-vdivider {
+    width: 1px;
+    height: 1.5rem;
+    background: rgba(255,255,255,0.15);
+    margin: 0 0.2rem;
+    flex-shrink: 0;
+}
+.bgr-spacer { flex: 1; min-width: 0.5rem; }
+
+.bgr-tool-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.32rem 0.7rem;
+    border-radius: 6px;
+    border: 1.5px solid transparent;
+    background: rgba(255,255,255,0.07);
+    color: rgba(255,255,255,0.65);
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    white-space: nowrap;
+    user-select: none;
+}
+.bgr-tool-btn:hover { background: rgba(255,255,255,0.14); color: rgba(255,255,255,0.9); }
+.bgr-tool-btn.active.bgr-remove-btn {
+    background: rgba(220,50,50,0.18);
+    border-color: rgba(220,60,60,0.55);
+    color: #ff8a8a;
+}
+.bgr-tool-btn.active.bgr-keep-btn {
+    background: rgba(40,185,80,0.18);
+    border-color: rgba(50,185,80,0.55);
+    color: #6eee8e;
+}
+
+.bgr-brush-ctrl {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: rgba(255,255,255,0.5);
+    font-size: 0.75rem;
+    user-select: none;
+}
+.bgr-brush-ctrl input[type=range] {
+    width: 78px;
+    accent-color: #4db8c8;
+    cursor: pointer;
+}
+#bgrBrushSizeLabel {
+    min-width: 1.4rem;
+    color: rgba(255,255,255,0.7);
+    font-size: 0.73rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.bgr-action-btn {
+    padding: 0.32rem 0.85rem;
+    border-radius: 6px;
+    border: 1px solid rgba(255,255,255,0.18);
+    background: rgba(255,255,255,0.09);
+    color: rgba(255,255,255,0.82);
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.12s;
+    white-space: nowrap;
+    user-select: none;
+}
+.bgr-action-btn:hover { background: rgba(255,255,255,0.16); }
+.bgr-keep-changes-btn {
+    background: linear-gradient(135deg, #2fa0b0, #248592);
+    border-color: #1f727f;
+    color: #fff;
+}
+.bgr-keep-changes-btn:hover { background: linear-gradient(135deg, #38b8ca, #2fa0b0); }
+
+#bgrCanvasArea {
+    flex: 1;
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 1.5rem;
+    background-color: #22272f;
+    background-image:
+        linear-gradient(45deg, #2c3240 25%, transparent 25%),
+        linear-gradient(-45deg, #2c3240 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #2c3240 75%),
+        linear-gradient(-45deg, transparent 75%, #2c3240 75%);
+    background-size: 18px 18px;
+    background-position: 0 0, 0 9px, 9px -9px, -9px 0px;
+}
+
+#bgrCanvas {
+    max-width: calc(100vw - 3rem);
+    max-height: calc(100vh - 5.5rem);
+    display: block;
+    box-shadow: 0 6px 40px rgba(0,0,0,0.7);
+    cursor: crosshair;
+}

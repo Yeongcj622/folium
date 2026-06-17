@@ -4616,12 +4616,10 @@ function applyListStyle(type) {
         let newLineHtmls, newTypes, focusIdx;
 
         if (sel && sel.rangeCount > 0 && sel.getRangeAt(0).collapsed) {
-            // Cursor only (generator): insert a new empty bullet line AFTER the cursor line.
-            // All existing lines stay as "none" type so they look unchanged.
-            const insertIdx = cursorLine + 1;
-            newLineHtmls = [...lineHtmls.slice(0, insertIdx), "", ...lineHtmls.slice(insertIdx)];
-            newTypes = newLineHtmls.map((_, i) => i === insertIdx ? type : "none");
-            focusIdx = insertIdx;
+            // Cursor only: convert the current line to the chosen list type
+            newLineHtmls = lineHtmls;
+            newTypes = lineHtmls.map((_, i) => i === cursorLine ? type : "none");
+            focusIdx = cursorLine;
         } else {
             // Selection: apply the type to every existing line
             newLineHtmls = lineHtmls;
@@ -4659,19 +4657,14 @@ function applyListStyle(type) {
     } else {
         const range = sel.getRangeAt(0);
         if (range.collapsed) {
-            // Cursor only → apply from the cursor's <li> to the end of the list
+            // Cursor only → change just the current item's type
             let node = range.startContainer;
             let foundLi = null;
             while (node && node !== editDiv) {
                 if (node.tagName === "LI") { foundLi = node; break; }
                 node = node.parentNode;
             }
-            if (foundLi) {
-                const idx = allLis.indexOf(foundLi);
-                affectedLis = idx >= 0 ? allLis.slice(idx) : allLis;
-            } else {
-                affectedLis = allLis;
-            }
+            affectedLis = foundLi ? [foundLi] : allLis;
         } else {
             // Selection → find all <li> items that intersect the highlighted range
             affectedLis = allLis.filter(li => { try { return range.intersectsNode(li); } catch { return false; } });
@@ -4960,6 +4953,10 @@ document.addEventListener("keydown", (e) => {
         document.getElementById("deleteBtn").click();
     }
     if (e.key === "Escape") {
+        if (bgrSession) {
+            bgrClose();
+            return;
+        }
         if (penDraw) {
             cancelFreeformDraw();
         } else if (state.editPoints) {
@@ -6320,77 +6317,163 @@ function enterTextEditMode(div, obj, skipInitialSelectAll = false, deferFocus = 
                 return;
             }
 
-            if (ke.key === "Enter" && !ke.shiftKey && !ke.ctrlKey && !ke.metaKey) {
-                if (inList) {
-                    const sel = window.getSelection();
-                    if (sel && sel.rangeCount > 0 && sel.getRangeAt(0).collapsed) {
-                        let li = sel.getRangeAt(0).startContainer;
-                        while (li && li !== div) { if (li.tagName === "LI") break; li = li.parentNode; }
-                        if (li && li.tagName === "LI" && !li.textContent.trim()) {
-                            const listEl = li.closest("ul, ol");
-                            // Empty line in a real list (not already "none") → strip the bullet from
-                            // this line only, keeping the line in place (cursor stays, no new item).
-                            if (listEl && listEl.dataset.listType !== "none") {
-                                ke.preventDefault();
-                                const allLis = [...div.querySelectorAll("li")];
-                                const liIdx = allLis.indexOf(li);
-                                const curTypes = allLis.map(el =>
-                                    el.closest("ul,ol")?.dataset.listType || obj.list || "bullet");
-                                const newTypes = [...curTypes];
-                                newTypes[liIdx] = "none";
-
-                                if (newTypes.every(t => t === "none")) {
-                                    // All lines are now de-listed → convert to plain text
-                                    const lineHtmls = allLis.map(el => el.innerHTML);
-                                    div.innerHTML = lineHtmls.join("<br>");
+            // ── Backspace at start of a list item ─────────────────────────────────
+            if (ke.key === "Backspace" && inList) {
+                const sel0 = window.getSelection();
+                if (sel0 && sel0.rangeCount > 0 && sel0.getRangeAt(0).collapsed) {
+                    const r0 = sel0.getRangeAt(0);
+                    let li0 = r0.startContainer;
+                    while (li0 && li0 !== div) { if (li0.tagName === "LI") break; li0 = li0.parentNode; }
+                    if (li0 && li0.tagName === "LI") {
+                        // Are we at the very start of this li?
+                        const testR = document.createRange();
+                        testR.selectNodeContents(li0);
+                        testR.setEnd(r0.startContainer, r0.startOffset);
+                        if (testR.toString().length === 0 && testR.cloneContents().textContent === "") {
+                            ke.preventDefault();
+                            const allLis0 = [...div.querySelectorAll("li")];
+                            const liIdx0 = allLis0.indexOf(li0);
+                            if (liIdx0 === 0) {
+                                // First item → de-list it (remove bullet, keep text)
+                                const content0 = li0.innerHTML.replace(/^<br\s*\/?>$/i, "");
+                                const listEl0 = li0.closest("ul,ol");
+                                li0.remove();
+                                if (listEl0 && !listEl0.querySelector("li")) listEl0.remove();
+                                if (!div.querySelector("li")) {
                                     obj.list = "none";
                                     delete obj.paragraphListTypes;
                                     delete obj.paragraphIndents;
-                                    syncContent();
-                                    return;
-                                }
-
-                                // Rebuild blocks with the one line converted to "none"
-                                const items = allLis.map((el, i) => ({ html: el.innerHTML, type: newTypes[i] }));
-                                div.innerHTML = "";
-                                let bi = 0;
-                                while (bi < items.length) {
-                                    const curType = items[bi].type;
-                                    const block = createListBlock(curType);
-                                    while (bi < items.length && items[bi].type === curType) {
-                                        const newLi = document.createElement("li");
-                                        newLi.innerHTML = items[bi].html;
-                                        block.appendChild(newLi);
-                                        bi++;
+                                    div.innerHTML = (content0 ? content0 + (div.innerHTML ? "<br>" + div.innerHTML : "") : div.innerHTML);
+                                } else {
+                                    if (content0) {
+                                        const br0 = document.createElement("br");
+                                        div.insertBefore(br0, div.firstChild);
+                                        const tmp0 = document.createElement("span");
+                                        tmp0.innerHTML = content0;
+                                        while (tmp0.firstChild) div.insertBefore(tmp0.firstChild, br0);
                                     }
-                                    div.appendChild(block);
                                 }
-
-                                // Keep obj.list as the dominant non-"none" type
-                                const typeCounts = {};
-                                newTypes.forEach(t => { typeCounts[t] = (typeCounts[t] || 0) + 1; });
-                                const nonNone = Object.entries(typeCounts).filter(([t]) => t !== "none");
-                                obj.list = nonNone.length
-                                    ? nonNone.sort((a, b) => b[1] - a[1])[0][0]
-                                    : (obj.list && obj.list !== "none" ? obj.list : "bullet");
-
-                                // Restore cursor to the now-unlisted line
-                                const convertedLi = div.querySelectorAll("li")[liIdx];
-                                if (convertedLi) {
-                                    const r = document.createRange();
-                                    r.setStart(convertedLi, 0);
-                                    r.collapse(true);
-                                    sel.removeAllRanges();
-                                    sel.addRange(r);
+                                const rr = document.createRange();
+                                rr.setStart(div.firstChild || div, 0);
+                                rr.collapse(true);
+                                sel0.removeAllRanges(); sel0.addRange(rr);
+                            } else {
+                                // Merge with previous li
+                                const prevLi = allLis0[liIdx0 - 1];
+                                const mergeContent = li0.innerHTML.replace(/^<br\s*\/?>$/i, "");
+                                const snapNode = prevLi.lastChild;
+                                if (mergeContent) {
+                                    const tmp1 = document.createElement("span");
+                                    tmp1.innerHTML = mergeContent;
+                                    while (tmp1.firstChild) prevLi.appendChild(tmp1.firstChild);
                                 }
-
-                                syncContent();
-                                return;
+                                li0.remove();
+                                const rr2 = document.createRange();
+                                if (snapNode) {
+                                    if (snapNode.nodeType === Node.TEXT_NODE) rr2.setStart(snapNode, snapNode.textContent.length);
+                                    else rr2.setStartAfter(snapNode);
+                                } else { rr2.setStart(prevLi, 0); }
+                                rr2.collapse(true);
+                                sel0.removeAllRanges(); sel0.addRange(rr2);
                             }
+                            syncContent();
+                            return;
                         }
                     }
                 }
-                // fall through to browser default (creates new <li> or <div>)
+            }
+
+            // ── Enter: always handle manually in list mode to avoid browser <div> creation ──
+            if (ke.key === "Enter" && !ke.shiftKey && !ke.ctrlKey && !ke.metaKey) {
+                if (inList) {
+                    ke.preventDefault();
+                    const sel = window.getSelection();
+                    if (!sel || sel.rangeCount === 0) return;
+                    const range = sel.getRangeAt(0);
+                    if (!range.collapsed) range.deleteContents();
+
+                    let li = range.startContainer;
+                    while (li && li !== div) { if (li.tagName === "LI") break; li = li.parentNode; }
+
+                    if (!li || li.tagName !== "LI") {
+                        // Cursor not in any <li> — shouldn't normally happen
+                        document.execCommand("insertLineBreak");
+                        syncContent();
+                        return;
+                    }
+
+                    if (!li.textContent.trim() && !li.querySelector("img")) {
+                        // Empty item → exit list (de-list this item, keep cursor here)
+                        const allLisE = [...div.querySelectorAll("li")];
+                        const liIdxE = allLisE.indexOf(li);
+                        const curTypesE = allLisE.map(el => el.closest("ul,ol")?.dataset.listType || obj.list || "bullet");
+                        const newTypesE = [...curTypesE];
+                        newTypesE[liIdxE] = "none";
+
+                        if (newTypesE.every(t => t === "none")) {
+                            const lineHtmlsE = allLisE.map(el => el.innerHTML.replace(/^<br\s*\/?>$/i, ""));
+                            div.innerHTML = lineHtmlsE.join("<br>");
+                            obj.list = "none";
+                            delete obj.paragraphListTypes;
+                            delete obj.paragraphIndents;
+                            // Cursor at the converted line position
+                            let node = div.childNodes[liIdxE * 2] || div.lastChild || div;
+                            const re = document.createRange();
+                            re.setStart(node, 0); re.collapse(true);
+                            sel.removeAllRanges(); sel.addRange(re);
+                            syncContent();
+                            return;
+                        }
+
+                        const itemsE = allLisE.map((el, i) => ({ html: el.innerHTML.replace(/^<br\s*\/?>$/i, ""), type: newTypesE[i] }));
+                        div.innerHTML = "";
+                        let bi = 0;
+                        while (bi < itemsE.length) {
+                            const cType = itemsE[bi].type;
+                            const block = createListBlock(cType);
+                            while (bi < itemsE.length && itemsE[bi].type === cType) {
+                                const newLiE = document.createElement("li");
+                                newLiE.innerHTML = itemsE[bi].html;
+                                block.appendChild(newLiE);
+                                bi++;
+                            }
+                            div.appendChild(block);
+                        }
+                        const tcE = {};
+                        newTypesE.forEach(t => { tcE[t] = (tcE[t] || 0) + 1; });
+                        const nnE = Object.entries(tcE).filter(([t]) => t !== "none");
+                        obj.list = nnE.length ? nnE.sort((a, b) => b[1] - a[1])[0][0] : (obj.list && obj.list !== "none" ? obj.list : "bullet");
+                        const convLi = div.querySelectorAll("li")[liIdxE];
+                        if (convLi) {
+                            const re2 = document.createRange();
+                            re2.setStart(convLi, 0); re2.collapse(true);
+                            sel.removeAllRanges(); sel.addRange(re2);
+                        }
+                        syncContent();
+                        return;
+                    }
+
+                    // Non-empty item → split at cursor, create new <li>
+                    const newLi = document.createElement("li");
+                    if (li.dataset.indent) { newLi.dataset.indent = li.dataset.indent; newLi.style.paddingLeft = li.style.paddingLeft; }
+                    const afterRange = document.createRange();
+                    afterRange.setStart(range.startContainer, range.startOffset);
+                    afterRange.setEnd(li, li.childNodes.length);
+                    const frag = afterRange.extractContents();
+                    if (frag.hasChildNodes()) newLi.appendChild(frag);
+                    li.after(newLi);
+
+                    const re3 = document.createRange();
+                    const fc = newLi.firstChild;
+                    if (fc && fc.nodeType === Node.TEXT_NODE) re3.setStart(fc, 0);
+                    else if (fc) re3.setStart(fc, 0);
+                    else re3.setStart(newLi, 0);
+                    re3.collapse(true);
+                    sel.removeAllRanges(); sel.addRange(re3);
+                    syncContent();
+                    return;
+                }
+                // non-list: fall through to browser default
                 return;
             }
 
@@ -8786,69 +8869,304 @@ document.getElementById("picWidthInput").addEventListener("change", (e) => {
     updateFormatPictureTab();
 });
 
-// ---- Remove Background (canvas flood-fill from corners) ----
+// ---- Remove Background (PowerPoint-style interactive editor) ----
+
+let bgrSession = null;
+
 document.getElementById("picRemoveBgBtn").addEventListener("click", () => {
     const targets = picTargets();
     if (!targets.length) return;
     const obj = targets[0];
     if (!obj.src) return;
+    bgrOpen(obj);
+});
 
+function bgrOpen(obj) {
     const img = new Image();
     img.crossOrigin = "anonymous";
     img.onload = () => {
-        const canvas = document.createElement("canvas");
-        canvas.width = img.naturalWidth || img.width;
-        canvas.height = img.naturalHeight || img.height;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0);
-        const w = canvas.width, h = canvas.height;
-        const data = ctx.getImageData(0, 0, w, h);
-        const px = data.data;
+        const W = img.naturalWidth || img.width;
+        const H = img.naturalHeight || img.height;
 
-        // Sample background color from 4 corners
-        function getPixel(x, y) {
-            const i = (y * w + x) * 4;
-            return [px[i], px[i+1], px[i+2], px[i+3]];
-        }
-        const corners = [getPixel(0,0), getPixel(w-1,0), getPixel(0,h-1), getPixel(w-1,h-1)];
-        // Average the corner colors
-        const bg = corners.reduce((a, c) => [a[0]+c[0], a[1]+c[1], a[2]+c[2], a[3]+c[3]], [0,0,0,0]).map(v => Math.round(v/4));
+        // Extract original pixels into a fixed buffer
+        const offscreen = document.createElement("canvas");
+        offscreen.width = W; offscreen.height = H;
+        const octx = offscreen.getContext("2d");
+        octx.drawImage(img, 0, 0);
+        const srcData = octx.getImageData(0, 0, W, H).data;
 
-        // Flood-fill BFS from corners, making pixels transparent if within threshold
-        const THRESHOLD = 40;
-        function colorDist(i) {
-            return Math.sqrt(
-                Math.pow(px[i]-bg[0],2) + Math.pow(px[i+1]-bg[1],2) + Math.pow(px[i+2]-bg[2],2)
-            );
-        }
-        const visited = new Uint8Array(w * h);
-        const queue = [];
-        function enqueue(x, y) {
-            if (x < 0 || y < 0 || x >= w || y >= h) return;
-            const idx = y * w + x;
-            if (visited[idx]) return;
-            visited[idx] = 1;
-            const pi = idx * 4;
-            if (px[pi+3] === 0 || colorDist(pi) <= THRESHOLD) queue.push([x, y]);
-        }
-        enqueue(0, 0); enqueue(w-1, 0); enqueue(0, h-1); enqueue(w-1, h-1);
-        while (queue.length) {
-            const [x, y] = queue.pop();
-            const pi = (y * w + x) * 4;
-            if (colorDist(pi) <= THRESHOLD) {
-                px[pi+3] = 0; // make transparent
-                enqueue(x+1, y); enqueue(x-1, y); enqueue(x, y+1); enqueue(x, y-1);
-            }
-        }
-        ctx.putImageData(data, 0, 0);
+        const removeMask = new Uint8Array(W * H); // 1 = will be removed
+        const keepMask   = new Uint8Array(W * H); // 1 = user-protected (overrides remove)
+        bgrInitialDetect(srcData, W, H, removeMask);
+        const initRemoveMask = removeMask.slice();
 
-        pushHistory();
-        obj.src = canvas.toDataURL("image/png");
-        render();
+        const canvas = document.getElementById("bgrCanvas");
+        canvas.width  = W;
+        canvas.height = H;
+
+        bgrSession = {
+            obj, srcData, W, H,
+            removeMask, keepMask, initRemoveMask,
+            tool: "remove",
+            brushSize: 15,
+            mouseDown: false,
+            lastX: -1, lastY: -1,
+        };
+
+        document.getElementById("bgrModal").classList.add("active");
+        document.getElementById("bgrMarkRemoveBtn").classList.add("active");
+        document.getElementById("bgrMarkKeepBtn").classList.remove("active");
+        document.getElementById("bgrBrushSlider").value = 15;
+        document.getElementById("bgrBrushSizeLabel").textContent = "15";
+
+        bgrRender();
     };
     img.onerror = () => showStatus("Cannot process this image (CORS or format issue)", false);
     img.src = obj.src;
+}
+
+function bgrClose() {
+    document.getElementById("bgrModal").classList.remove("active");
+    bgrSession = null;
+}
+
+function bgrInitialDetect(srcData, W, H, removeMask) {
+    const px = srcData;
+    const corners = [[0,0],[W-1,0],[0,H-1],[W-1,H-1]];
+    const avgBg = corners
+        .map(([x, y]) => { const i=(y*W+x)*4; return [px[i], px[i+1], px[i+2]]; })
+        .reduce((a, c) => [a[0]+c[0], a[1]+c[1], a[2]+c[2]], [0,0,0])
+        .map(v => v / 4);
+
+    const THRESHOLD = 42;
+    const visited = new Uint8Array(W * H);
+    const queue = [];
+    for (const [x, y] of corners) {
+        const idx = y * W + x;
+        if (!visited[idx]) { visited[idx] = 1; queue.push(idx); }
+    }
+    while (queue.length) {
+        const idx = queue.pop();
+        const pi = idx * 4;
+        const dr = px[pi]-avgBg[0], dg = px[pi+1]-avgBg[1], db = px[pi+2]-avgBg[2];
+        if (px[pi+3] === 0 || Math.sqrt(dr*dr+dg*dg+db*db) <= THRESHOLD) {
+            removeMask[idx] = 1;
+            const cx = idx % W, cy = (idx / W) | 0;
+            for (const [dx, dy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+                const nx = cx+dx, ny = cy+dy;
+                if (nx<0||ny<0||nx>=W||ny>=H) continue;
+                const ni = ny*W+nx;
+                if (!visited[ni]) { visited[ni]=1; queue.push(ni); }
+            }
+        }
+    }
+}
+
+function bgrApplyStroke(canvasX, canvasY) {
+    const s = bgrSession;
+    if (!s) return;
+    const { srcData, W, H, removeMask, keepMask, tool, brushSize, lastX, lastY } = s;
+
+    // Interpolate along the stroke for a smooth continuous brush
+    const dist = lastX >= 0 ? Math.hypot(canvasX-lastX, canvasY-lastY) : 0;
+    const steps = Math.max(1, Math.ceil(dist / Math.max(1, brushSize * 0.4)));
+    const seedSet = new Set();
+
+    for (let step = 0; step <= steps; step++) {
+        const t = steps > 0 ? step / steps : 0;
+        const bx = Math.round(lastX >= 0 ? lastX + (canvasX-lastX)*t : canvasX);
+        const by = Math.round(lastY >= 0 ? lastY + (canvasY-lastY)*t : canvasY);
+        for (let dy = -brushSize; dy <= brushSize; dy++) {
+            for (let dx = -brushSize; dx <= brushSize; dx++) {
+                if (dx*dx + dy*dy > brushSize*brushSize) continue;
+                const nx = bx+dx, ny = by+dy;
+                if (nx<0||ny<0||nx>=W||ny>=H) continue;
+                seedSet.add(ny*W+nx);
+            }
+        }
+    }
+
+    // Directly paint all brush pixels
+    for (const idx of seedSet) {
+        if (tool === "remove") { removeMask[idx] = 1; keepMask[idx] = 0; }
+        else                   { keepMask[idx]   = 1; removeMask[idx] = 0; }
+    }
+
+    // Flood-fill expand from seeds via color similarity (smart detection)
+    const EXPAND_THRESHOLD = 26;
+    const expandVisited = new Uint8Array(W * H);
+    const queue = [...seedSet];
+    for (const idx of seedSet) expandVisited[idx] = 1;
+
+    while (queue.length) {
+        const idx = queue.pop();
+        const pi  = idx * 4;
+        const r0  = srcData[pi], g0 = srcData[pi+1], b0 = srcData[pi+2];
+        const cx  = idx % W, cy = (idx / W) | 0;
+        for (const [ddx, ddy] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+            const nx = cx+ddx, ny = cy+ddy;
+            if (nx<0||ny<0||nx>=W||ny>=H) continue;
+            const ni = ny*W+nx;
+            if (expandVisited[ni]) continue;
+            expandVisited[ni] = 1;
+            const pi2 = ni*4;
+            const dr = srcData[pi2]-r0, dg = srcData[pi2+1]-g0, db = srcData[pi2+2]-b0;
+            if (Math.sqrt(dr*dr+dg*dg+db*db) <= EXPAND_THRESHOLD) {
+                if (tool === "remove" && !keepMask[ni]) removeMask[ni] = 1;
+                else if (tool === "keep") { keepMask[ni] = 1; removeMask[ni] = 0; }
+                queue.push(ni);
+            }
+        }
+    }
+
+    s.lastX = canvasX;
+    s.lastY = canvasY;
+}
+
+function bgrRender(cursorX, cursorY) {
+    if (!bgrSession) return;
+    const { srcData, W, H, removeMask, keepMask, tool, brushSize } = bgrSession;
+
+    const canvas = document.getElementById("bgrCanvas");
+    const ctx = canvas.getContext("2d");
+    const display = ctx.createImageData(W, H);
+    const dp = display.data;
+
+    for (let i = 0; i < W * H; i++) {
+        const s = i * 4;
+        if (removeMask[i] && !keepMask[i]) {
+            // Purple-magenta tint = "will become transparent"
+            dp[s]   = (srcData[s]   * 0.28 + 155 * 0.72) | 0;
+            dp[s+1] = (srcData[s+1] * 0.28 +  20 * 0.72) | 0;
+            dp[s+2] = (srcData[s+2] * 0.28 + 175 * 0.72) | 0;
+            dp[s+3] = 185;
+        } else {
+            dp[s]   = srcData[s];
+            dp[s+1] = srcData[s+1];
+            dp[s+2] = srcData[s+2];
+            dp[s+3] = srcData[s+3];
+        }
+    }
+    ctx.putImageData(display, 0, 0);
+
+    // Brush cursor preview
+    if (cursorX !== undefined && cursorY !== undefined) {
+        const rect   = canvas.getBoundingClientRect();
+        const pxScale = rect.width > 0 ? W / rect.width : 1;
+        const isRemoveTool = tool === "remove";
+        ctx.save();
+        ctx.strokeStyle = isRemoveTool ? "rgba(255,80,80,0.95)" : "rgba(50,215,85,0.95)";
+        ctx.lineWidth   = Math.max(1, 1.5 * pxScale);
+        ctx.setLineDash([4 * pxScale, 3 * pxScale]);
+        ctx.beginPath();
+        ctx.arc(cursorX, cursorY, brushSize, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.lineWidth = Math.max(1, 2 * pxScale);
+        const arm = brushSize * 0.38;
+        ctx.beginPath();
+        ctx.moveTo(cursorX - arm, cursorY);
+        ctx.lineTo(cursorX + arm, cursorY);
+        if (!isRemoveTool) {
+            ctx.moveTo(cursorX, cursorY - arm);
+            ctx.lineTo(cursorX, cursorY + arm);
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
+function bgrApplyFinal() {
+    if (!bgrSession) return;
+    const { obj, srcData, W, H, removeMask, keepMask } = bgrSession;
+
+    const offscreen = document.createElement("canvas");
+    offscreen.width = W; offscreen.height = H;
+    const ctx = offscreen.getContext("2d");
+    const result = ctx.createImageData(W, H);
+    const rp = result.data;
+    for (let i = 0; i < W * H; i++) {
+        const s = i * 4;
+        rp[s]   = srcData[s];
+        rp[s+1] = srcData[s+1];
+        rp[s+2] = srcData[s+2];
+        rp[s+3] = (removeMask[i] && !keepMask[i]) ? 0 : srcData[s+3];
+    }
+    ctx.putImageData(result, 0, 0);
+    pushHistory();
+    obj.src = offscreen.toDataURL("image/png");
+    render();
+    bgrClose();
+}
+
+// Tool button wiring
+document.getElementById("bgrMarkRemoveBtn").addEventListener("click", () => {
+    if (!bgrSession) return;
+    bgrSession.tool = "remove";
+    document.getElementById("bgrMarkRemoveBtn").classList.add("active");
+    document.getElementById("bgrMarkKeepBtn").classList.remove("active");
 });
+document.getElementById("bgrMarkKeepBtn").addEventListener("click", () => {
+    if (!bgrSession) return;
+    bgrSession.tool = "keep";
+    document.getElementById("bgrMarkKeepBtn").classList.add("active");
+    document.getElementById("bgrMarkRemoveBtn").classList.remove("active");
+});
+document.getElementById("bgrBrushSlider").addEventListener("input", e => {
+    if (!bgrSession) return;
+    bgrSession.brushSize = parseInt(e.target.value);
+    document.getElementById("bgrBrushSizeLabel").textContent = e.target.value;
+});
+document.getElementById("bgrDiscardBtn").addEventListener("click", () => {
+    if (!bgrSession) return;
+    bgrSession.removeMask.set(bgrSession.initRemoveMask);
+    bgrSession.keepMask.fill(0);
+    bgrSession.lastX = bgrSession.lastY = -1;
+    bgrRender();
+});
+document.getElementById("bgrKeepBtn").addEventListener("click", bgrApplyFinal);
+
+// Canvas mouse events
+(function () {
+    const canvas = document.getElementById("bgrCanvas");
+
+    function toCanvas(e) {
+        const rect = canvas.getBoundingClientRect();
+        const s = bgrSession;
+        return [
+            (e.clientX - rect.left) * (s.W / rect.width),
+            (e.clientY - rect.top)  * (s.H / rect.height),
+        ];
+    }
+
+    canvas.addEventListener("mousedown", e => {
+        if (!bgrSession) return;
+        e.preventDefault();
+        bgrSession.mouseDown = true;
+        bgrSession.lastX = bgrSession.lastY = -1;
+        const [x, y] = toCanvas(e);
+        bgrApplyStroke(x, y);
+        bgrRender(x, y);
+    });
+    canvas.addEventListener("mousemove", e => {
+        if (!bgrSession) return;
+        const [x, y] = toCanvas(e);
+        if (bgrSession.mouseDown) bgrApplyStroke(x, y);
+        bgrRender(x, y);
+    });
+    canvas.addEventListener("mouseup", () => {
+        if (!bgrSession) return;
+        bgrSession.mouseDown = false;
+        bgrSession.lastX = bgrSession.lastY = -1;
+        bgrRender();
+    });
+    canvas.addEventListener("mouseleave", () => {
+        if (!bgrSession) return;
+        bgrSession.mouseDown = false;
+        bgrSession.lastX = bgrSession.lastY = -1;
+        bgrRender();
+    });
+})();
 
 // ---- Format Pane button ----
 document.getElementById("picFormatPaneBtn").addEventListener("click", () => {
