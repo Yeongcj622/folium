@@ -337,6 +337,7 @@ function applyTableStyle(group) {
 let historyStack = [];
 let redoStack = [];
 let historyTimer = null;
+let spellcheckEnabled = true;
 
 function snapshotState() {
     return JSON.stringify({ slides: state.slides, current: state.current, slideW: SLIDE_W, slideH: SLIDE_H,
@@ -1801,6 +1802,8 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             const div = document.createElement("div");
             div.className = "text-edit-box";
             div.setAttribute("data-id", obj.id);
+            div.setAttribute("spellcheck", spellcheckEnabled ? "true" : "false");
+            div.setAttribute("lang", "en");
             div.style.fontFamily = `"${obj.fontFamily}", sans-serif`;
             div.style.fontSize = obj.fontSize + "px";
             div.style.color = obj.fontColor;
@@ -5299,7 +5302,8 @@ window.addEventListener("mouseup", (e) => {
     if (drag.mode === "draw") {
         const x = Math.min(drag.startX, pt.x), y = Math.min(drag.startY, pt.y);
         let w = Math.abs(pt.x - drag.startX), h = Math.abs(pt.y - drag.startY);
-        if (w < 4 && h < 4) { w = 120; h = drag.tool === "line" || drag.tool === "arrow" ? 0 : (drag.tool === "text" ? 60 : 90); }
+        if (w < 4 && h < 4) { w = 120; h = drag.tool === "line" || drag.tool === "arrow" ? 0 : (drag.tool === "text" ? 100 : 90); }
+        if (drag.tool === "text" && w === 120) w = 280;
         const obj = makeObject(drag.tool, x, y, Math.max(w, 4), Math.max(h, drag.tool === "line" || drag.tool === "arrow" ? 0 : 4));
         if (drag.tool === "line" || drag.tool === "arrow" && h === 0) obj.h = h;
         if (obj.type === "line" || obj.type === "arrow") {
@@ -5895,6 +5899,11 @@ function enterTextEditMode(div, obj, skipInitialSelectAll = false, deferFocus = 
         // swap the rendered KaTeX markup for the raw source so it can be edited as text
         div.textContent = obj.text;
     }
+    // Apply spellcheck BEFORE making the element editable so the browser
+    // reads the correct state when it first activates the edit context.
+    div.setAttribute("spellcheck", spellcheckEnabled ? "true" : "false");
+    div.setAttribute("autocorrect", spellcheckEnabled ? "on" : "off");
+    div.setAttribute("autocapitalize", spellcheckEnabled ? "sentences" : "off");
     div.contentEditable = "true";
     div.style.cursor = "text";
 
@@ -9291,6 +9300,24 @@ function exportPdf() {
     setTimeout(() => { printArea.remove(); pageStyle.remove(); }, 1000);
 }
 
+// ============ Spell-check toggle ============
+document.getElementById("spellcheckToggle").addEventListener("change", (e) => {
+    spellcheckEnabled = e.target.checked;
+    // Update every text-edit-box currently in the DOM
+    svg.querySelectorAll(".text-edit-box").forEach(div => {
+        div.setAttribute("spellcheck", spellcheckEnabled ? "true" : "false");
+        div.setAttribute("autocorrect", spellcheckEnabled ? "on" : "off");
+        div.setAttribute("autocapitalize", spellcheckEnabled ? "sentences" : "off");
+    });
+    // If one is actively being edited, force the browser to re-evaluate by
+    // briefly removing and restoring contenteditable (no blur, no re-render).
+    const active = document.querySelector('.text-edit-box[contenteditable="true"]');
+    if (active) {
+        active.contentEditable = "false";
+        active.contentEditable = "true";
+    }
+});
+
 // ============ Export: LaTeX (TikZ) + images as .zip ============
 document.getElementById("exportTexBtn").onclick = exportTex;
 
@@ -9826,9 +9853,12 @@ function exportTex() {
         zip.file(img.name, base64, { base64: true });
     });
     zip.generateAsync({ type: "blob" }).then(blob => {
+        const input = prompt("Name your zip file:", "latex-document");
+        if (input === null) return;
+        const name = (input.trim() || "latex-document").replace(/\.zip$/i, "") + ".zip";
         const a = document.createElement("a");
         a.href = URL.createObjectURL(blob);
-        a.download = "latex-document.zip";
+        a.download = name;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 2000);
     });
