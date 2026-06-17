@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 62" height="52">
+  <!-- Shadow slides (depth) -->
+  <rect x="6" y="20" width="42" height="30" rx="4" fill="rgba(0,0,0,0.12)"/>
+  <!-- Back slide -->
+  <rect x="3" y="17" width="42" height="30" rx="4" fill="rgba(255,255,255,0.22)" stroke="rgba(255,255,255,0.4)" stroke-width="1"/>
+  <!-- Middle slide -->
+  <rect x="7" y="14" width="42" height="30" rx="4" fill="rgba(255,255,255,0.40)" stroke="rgba(255,255,255,0.55)" stroke-width="1"/>
+  <!-- Front slide -->
+  <rect x="11" y="11" width="42" height="30" rx="4" fill="white"/>
+  <!-- Title bar on front slide -->
+  <rect x="15" y="15" width="34" height="5" rx="2" fill="#2fa0b0"/>
+  <!-- Content lines -->
+  <rect x="15" y="24" width="24" height="2.5" rx="1.5" fill="#b5e4ea"/>
+  <rect x="15" y="29" width="18" height="2.5" rx="1.5" fill="#d4eef2"/>
+  <rect x="15" y="34" width="21" height="2.5" rx="1.5" fill="#d4eef2"/>
+  <!-- Heart accent on slide -->
+  <path d="M44,19 C44,17.6 42.9,16.5 41.5,16.5 C40.8,16.5 40.2,16.8 39.8,17.3 C39.4,16.8 38.8,16.5 38.1,16.5 C36.7,16.5 35.6,17.6 35.6,19 C35.6,21 39.8,24 39.8,24 C39.8,24 44,21 44,19 Z" fill="#e05264"/>
+  <!-- App name: "Folium" bold -->
+  <text x="68" y="41" font-family="'Segoe UI',system-ui,-apple-system,sans-serif" font-size="26" font-weight="800" fill="white" letter-spacing="-0.5">Folium</text>
+</svg>
