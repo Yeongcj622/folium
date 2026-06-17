@@ -1383,6 +1383,7 @@ body {
     display: block;
     overflow: visible;
     user-select: none;
+    will-change: transform;
 }
 .zoom-bar {
     position: fixed;

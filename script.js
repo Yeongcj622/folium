@@ -697,9 +697,12 @@ canvasArea.addEventListener("mousedown", (e) => {
 });
 
 let currentScale = 1;
+// The zoom level at which the SVG was last fully rendered.
+// During a pinch/wheel gesture we apply a CSS transform relative to this.
+let _committedZoom = 1;
 
 function applyZoom() {
-    const padding = 32; // .canvas-pad padding (1rem each side)
+    const padding = 32;
     const availW = Math.max(canvasArea.clientWidth - padding, 50);
     const availH = Math.max(canvasArea.clientHeight - padding, 50);
     const fitScale = Math.min(availW / (SLIDE_W + CANVAS_MARGIN * 2), availH / (SLIDE_H + CANVAS_MARGIN * 2), 1);
@@ -710,9 +713,11 @@ function applyZoom() {
     canvasWrap.style.height = h + "px";
     svg.style.width = w + "px";
     svg.style.height = h + "px";
+    svg.style.transform = "";          // clear any CSS-transform preview
+    svg.style.transformOrigin = "";
+    _committedZoom = state.zoom;
     document.getElementById("zoomLevel").textContent = Math.round(state.zoom * 100) + "%";
-    const slider = document.getElementById("zoomSlider");
-    slider.value = Math.round(state.zoom * 100);
+    document.getElementById("zoomSlider").value = Math.round(state.zoom * 100);
     render();
 }
 
@@ -9423,41 +9428,50 @@ function scrollToSelection() {
     canvasArea.scrollTo({ left: px - canvasArea.clientWidth / 2, top: py - canvasArea.clientHeight / 2, behavior: "smooth" });
 }
 
-document.getElementById("zoomInBtn").onclick = () => { state.zoom = Math.min(20, Math.round((state.zoom + 0.05) * 1000) / 1000); applyZoom(); scrollToSelection(); };
-document.getElementById("zoomOutBtn").onclick = () => { state.zoom = Math.max(0.05, Math.round((state.zoom - 0.05) * 1000) / 1000); applyZoom(); scrollToSelection(); };
+document.getElementById("zoomInBtn").onclick = () => { state.zoom = Math.min(20, Math.round((state.zoom * 1.001) * 100000) / 100000); applyZoom(); scrollToSelection(); };
+document.getElementById("zoomOutBtn").onclick = () => { state.zoom = Math.max(0.05, Math.round((state.zoom / 1.001) * 100000) / 100000); applyZoom(); scrollToSelection(); };
 document.getElementById("zoomResetBtn").onclick = () => { state.zoom = 1; applyZoom(); scrollToSelection(); };
 document.getElementById("zoomSlider").oninput = (e) => { state.zoom = e.target.value / 100; applyZoom(); scrollToSelection(); };
 
-// Trackpad pinch-zoom / Ctrl+scroll-wheel zoom over the canvas area.
-// Uses rAF throttling so multiple wheel events per frame are batched into one render.
-let _zoomRAF = null;
+// Trackpad pinch-zoom / Ctrl+scroll-wheel zoom.
+// Preview: CSS transform (GPU compositor, zero layout cost).
+// Commit: full applyZoom() is debounced until the gesture settles.
 let _zoomDebounce = null;
+let _zoomBaseW = null; // canvasWrap width at the moment the gesture started
+let _zoomBaseH = null;
+
 canvasArea.addEventListener("wheel", (e) => {
     if (!e.ctrlKey) return;
     e.preventDefault();
-    const factor = Math.exp(-e.deltaY * 0.0015);
-    state.zoom = Math.min(20, Math.max(0.25, state.zoom * factor));
 
-    // Immediate CSS-scale preview (no DOM rebuild — GPU-composited)
-    const padding = 32;
-    const availW = Math.max(canvasArea.clientWidth - padding, 50);
-    const availH = Math.max(canvasArea.clientHeight - padding, 50);
-    const fitScale = Math.min(availW / (SLIDE_W + CANVAS_MARGIN * 2), availH / (SLIDE_H + CANVAS_MARGIN * 2), 1);
-    const cs = fitScale * state.zoom;
-    const w = (SLIDE_W + CANVAS_MARGIN * 2) * cs;
-    const h = (SLIDE_H + CANVAS_MARGIN * 2) * cs;
-    canvasWrap.style.width = w + "px";
-    canvasWrap.style.height = h + "px";
-    svg.style.width = w + "px";
-    svg.style.height = h + "px";
+    const factor = Math.exp(-e.deltaY * 0.001);
+    state.zoom = Math.min(20, Math.max(0.05, state.zoom * factor));
+
+    // Capture base dimensions once per gesture (before any transform has been applied)
+    if (_zoomBaseW === null) {
+        _zoomBaseW = parseFloat(canvasWrap.style.width)  || canvasWrap.offsetWidth;
+        _zoomBaseH = parseFloat(canvasWrap.style.height) || canvasWrap.offsetHeight;
+    }
+
+    // CSS transform preview — pure GPU operation, no layout recalculation
+    const ratio = state.zoom / _committedZoom;
+    svg.style.transformOrigin = "top left";
+    svg.style.transform = `scale(${ratio})`;
+
+    // Resize canvasWrap so the scrollbar tracks the apparent SVG size
+    canvasWrap.style.width  = _zoomBaseW  * ratio + "px";
+    canvasWrap.style.height = _zoomBaseH * ratio + "px";
+
     document.getElementById("zoomLevel").textContent = Math.round(state.zoom * 100) + "%";
     document.getElementById("zoomSlider").value = Math.round(state.zoom * 100);
 
-    // Debounce the full render (handles rescale) until the gesture settles
+    // Commit: re-render at true size once the gesture settles
     clearTimeout(_zoomDebounce);
     _zoomDebounce = setTimeout(() => {
+        _zoomBaseW = null;
+        _zoomBaseH = null;
         applyZoom();
-    }, 80);
+    }, 120);
 }, { passive: false });
 
 // ============ Undo / Redo buttons ============
