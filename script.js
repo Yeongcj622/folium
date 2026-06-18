@@ -4210,10 +4210,27 @@ const fontColorInput = makeColorPickerBtn("#000000", c => {
 });
 fontColorInputWrap.appendChild(fontColorInput);
 const textAlignBtns = document.querySelectorAll(".ribbon button[data-textalign]");
-const listDropdownBtn = document.getElementById("listDropdownBtn");
-const listDropdownMenu = document.getElementById("listDropdownMenu");
-const listDropdownIcon = document.getElementById("listDropdownIcon");
-const listStyleOpts = document.querySelectorAll(".list-style-opt");
+const bulletListBtn       = document.getElementById("bulletListBtn");
+const bulletListCaretBtn  = document.getElementById("bulletListCaretBtn");
+const bulletListMenu      = document.getElementById("bulletListMenu");
+const numberedListBtn     = document.getElementById("numberedListBtn");
+const numberedListCaretBtn = document.getElementById("numberedListCaretBtn");
+const numberedListMenu    = document.getElementById("numberedListMenu");
+const listStyleOpts       = document.querySelectorAll(".list-style-opt");
+
+const BULLET_TYPES = new Set(["bullet","circle","square","dash","arrow","check","star"]);
+const NUMBER_TYPES = new Set(["number","alpha-upper","alpha-lower","roman-upper","roman-lower"]);
+
+function getEffectiveListType() {
+    const { div: editDiv, obj: editObj } = getActiveTextEditContext();
+    if (editDiv && editDiv.isContentEditable && editObj) return getCurrentLiType() || editObj.list || "none";
+    return getTextTargets()[0]?.list || "none";
+}
+
+function closeAllListMenus() {
+    bulletListMenu.style.display = "none";
+    numberedListMenu.style.display = "none";
+}
 const pasteBtn = document.getElementById("pasteBtn");
 const cutBtn = document.getElementById("cutBtn");
 const copyBtn = document.getElementById("copyBtn");
@@ -4418,22 +4435,46 @@ textGlowBtn.onclick = () => applyFormatting(() => applyInlineStyle(textEffectSty
 textAlignBtns.forEach(btn => {
     btn.onclick = () => applyToTextSelection(o => { o.align = btn.dataset.textalign; });
 });
-// List dropdown toggle
-listDropdownBtn.addEventListener("mousedown", e => { e.preventDefault(); e.stopPropagation(); });
-listDropdownBtn.onclick = () => {
-    const open = listDropdownMenu.style.display !== "none";
-    if (open) {
-        listDropdownMenu.style.display = "none";
-        return;
-    }
-    const rect = listDropdownBtn.getBoundingClientRect();
-    listDropdownMenu.style.left = rect.left + "px";
-    listDropdownMenu.style.top = (rect.bottom + 2) + "px";
-    listDropdownMenu.style.display = "flex";
+// Quick-toggle: bullet list
+bulletListBtn.onclick = () => {
+    const cur = getEffectiveListType();
+    applyListStyle(BULLET_TYPES.has(cur) ? "none" : "bullet");
 };
+
+// Caret: open bullet style picker
+bulletListCaretBtn.onclick = () => {
+    const open = bulletListMenu.style.display !== "none";
+    closeAllListMenus();
+    if (!open) {
+        const rect = bulletListCaretBtn.getBoundingClientRect();
+        bulletListMenu.style.left = rect.left + "px";
+        bulletListMenu.style.top  = (rect.bottom + 2) + "px";
+        bulletListMenu.style.display = "flex";
+    }
+};
+
+// Quick-toggle: numbered list
+numberedListBtn.onclick = () => {
+    const cur = getEffectiveListType();
+    applyListStyle(NUMBER_TYPES.has(cur) ? "none" : "number");
+};
+
+// Caret: open numbered style picker
+numberedListCaretBtn.onclick = () => {
+    const open = numberedListMenu.style.display !== "none";
+    closeAllListMenus();
+    if (!open) {
+        const rect = numberedListCaretBtn.getBoundingClientRect();
+        numberedListMenu.style.left = rect.left + "px";
+        numberedListMenu.style.top  = (rect.bottom + 2) + "px";
+        numberedListMenu.style.display = "flex";
+    }
+};
+
 document.addEventListener("click", e => {
-    if (!listDropdownBtn.contains(e.target) && !listDropdownMenu.contains(e.target)) {
-        listDropdownMenu.style.display = "none";
+    if (!bulletListBtn.contains(e.target) && !bulletListCaretBtn.contains(e.target) && !bulletListMenu.contains(e.target) &&
+        !numberedListBtn.contains(e.target) && !numberedListCaretBtn.contains(e.target) && !numberedListMenu.contains(e.target)) {
+        closeAllListMenus();
     }
 });
 
@@ -4511,7 +4552,7 @@ function splitPlainTextAtCursor(div, range) {
 }
 
 function applyListStyle(type) {
-    listDropdownMenu.style.display = "none";
+    closeAllListMenus();
     const { div: editDiv, obj: editObj } = getActiveTextEditContext();
 
     // ── Toggle logic ──────────────────────────────────────────────────────────
@@ -4608,23 +4649,25 @@ function applyListStyle(type) {
         if (type === "none") { syncFontRibbon(); return; }
         pushHistory();
 
-        const { lines: lineHtmls, cursorLine } =
-            (sel && sel.rangeCount > 0 && sel.getRangeAt(0).collapsed)
-                ? splitPlainTextAtCursor(editDiv, sel.getRangeAt(0))
-                : splitPlainTextAtCursor(editDiv, null);
+        const range0 = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
+        const { lines: lineHtmls, cursorLine } = splitPlainTextAtCursor(editDiv, range0);
 
         let newLineHtmls, newTypes, focusIdx;
 
-        if (sel && sel.rangeCount > 0 && sel.getRangeAt(0).collapsed) {
-            // Cursor only: convert the current line to the chosen list type
+        if (!range0 || range0.collapsed) {
+            // Cursor only: convert just the current line
             newLineHtmls = lineHtmls;
             newTypes = lineHtmls.map((_, i) => i === cursorLine ? type : "none");
             focusIdx = cursorLine;
         } else {
-            // Selection: apply the type to every existing line
+            // Selection: apply only to the lines covered by the selection
+            const { cursorLine: selStart } = splitPlainTextAtCursor(editDiv, { startContainer: range0.startContainer, startOffset: range0.startOffset });
+            const { cursorLine: selEnd }   = splitPlainTextAtCursor(editDiv, { startContainer: range0.endContainer,   startOffset: range0.endOffset });
+            // If selection ends at offset 0 of a new line, don't include that line
+            const lastLine = (range0.endOffset === 0 && selEnd > selStart) ? selEnd - 1 : selEnd;
             newLineHtmls = lineHtmls;
-            newTypes = lineHtmls.map(() => type);
-            focusIdx = 0;
+            newTypes = lineHtmls.map((_, i) => (i >= selStart && i <= lastLine) ? type : "none");
+            focusIdx = selStart;
         }
 
         editDiv.innerHTML = "";
@@ -4763,12 +4806,13 @@ listStyleOpts.forEach(btn => {
 function syncFontRibbon() {
     const textObjs = getTextTargets();
     const enabled = textObjs.length > 0;
-    const controls = [fontFamilySelect, fontSizeInput, fontSizeDecBtn, fontSizeIncBtn, fontBoldBtn, fontItalicBtn, fontUnderlineBtn, fontStrikeBtn, indentDecBtn, indentIncBtn, fontColorInput, textShadowBtn, textGlowBtn, ...textAlignBtns, listDropdownBtn];
+    const controls = [fontFamilySelect, fontSizeInput, fontSizeDecBtn, fontSizeIncBtn, fontBoldBtn, fontItalicBtn, fontUnderlineBtn, fontStrikeBtn, indentDecBtn, indentIncBtn, fontColorInput, textShadowBtn, textGlowBtn, ...textAlignBtns, bulletListBtn, bulletListCaretBtn, numberedListBtn, numberedListCaretBtn];
     controls.forEach(c => c.disabled = !enabled);
     if (!enabled) {
         [fontBoldBtn, fontItalicBtn, fontUnderlineBtn, fontStrikeBtn, textShadowBtn, textGlowBtn, ...textAlignBtns].forEach(b => b.classList.remove("active"));
         listStyleOpts.forEach(b => b.classList.remove("active"));
-        listDropdownIcon.setAttribute("href", "#icon-list-bullet");
+        bulletListBtn.classList.remove("active");
+        numberedListBtn.classList.remove("active");
         return;
     }
     const obj = textObjs[0];
@@ -4785,9 +4829,8 @@ function syncFontRibbon() {
     // Prefer the cursor's actual <li> type over the object-level list type
     const curList = getCurrentLiType() || obj.list || "none";
     listStyleOpts.forEach(b => b.classList.toggle("active", b.dataset.list === curList));
-    const iconRef = LIST_ICONS[curList] || "#icon-list-bullet";
-    listDropdownIcon.setAttribute("href", iconRef);
-    listDropdownBtn.classList.toggle("active", curList !== "none");
+    bulletListBtn.classList.toggle("active",   BULLET_TYPES.has(curList));
+    numberedListBtn.classList.toggle("active", NUMBER_TYPES.has(curList));
 }
 
 // ============ Align / Distribute ============

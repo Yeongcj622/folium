@@ -679,14 +679,10 @@
                     <button id="indentIncBtn" class="font-size-btn" title="Increase indent" onmousedown="event.preventDefault()"><svg class="ribbon-svg-icon"><use href="#icon-indent-inc"/></svg></button>
                 </div>
                 <div class="btn-row">
-                    <div class="ribbon-dropdown list-dropdown">
-                        <button id="listDropdownBtn" class="icon-text-btn list-dropdown-btn" title="List style">
-                            <svg class="ribbon-svg-icon" id="listDropdownIcon"><use href="#icon-list-bullet"/></svg>
-                            <span>List</span><svg class="ribbon-svg-icon list-caret" aria-hidden="true"><use href="#icon-chevron-down-sm"/></svg>
-                        </button>
-                        <div id="listDropdownMenu" class="ribbon-dropdown-menu list-style-menu" style="display:none">
-                            <div class="list-menu-section">Bullets</div>
-                            <button class="list-style-opt" data-list="none">&#9166; No List</button>
+                    <div class="list-btn-group">
+                        <button id="bulletListBtn" class="list-quick-btn" title="Bullet list — click to toggle" onmousedown="event.preventDefault()"><svg class="ribbon-svg-icon"><use href="#icon-list-bullet"/></svg></button><button id="bulletListCaretBtn" class="list-caret-btn" title="Bullet list styles" onmousedown="event.preventDefault()"><svg class="list-caret-icon"><use href="#icon-chevron-down-sm"/></svg></button>
+                        <div id="bulletListMenu" class="ribbon-dropdown-menu list-style-menu" style="display:none">
+                            <div class="list-menu-section">Bullet Styles</div>
                             <button class="list-style-opt" data-list="bullet">&#8226; Bullet</button>
                             <button class="list-style-opt" data-list="circle">&#9702; Circle</button>
                             <button class="list-style-opt" data-list="square">&#9632; Square</button>
@@ -694,12 +690,20 @@
                             <button class="list-style-opt" data-list="arrow">&#8594; Arrow</button>
                             <button class="list-style-opt" data-list="check">&#10003; Checkmark</button>
                             <button class="list-style-opt" data-list="star">&#9733; Star</button>
-                            <div class="list-menu-section">Numbers</div>
+                            <div class="list-menu-divider"></div>
+                            <button class="list-style-opt" data-list="none">&#10005; Remove List</button>
+                        </div>
+                    </div><div class="list-btn-group">
+                        <button id="numberedListBtn" class="list-quick-btn" title="Numbered list — click to toggle" onmousedown="event.preventDefault()"><svg class="ribbon-svg-icon"><use href="#icon-list-number"/></svg></button><button id="numberedListCaretBtn" class="list-caret-btn" title="Numbered list styles" onmousedown="event.preventDefault()"><svg class="list-caret-icon"><use href="#icon-chevron-down-sm"/></svg></button>
+                        <div id="numberedListMenu" class="ribbon-dropdown-menu list-style-menu" style="display:none">
+                            <div class="list-menu-section">Number Styles</div>
                             <button class="list-style-opt" data-list="number">1. Numbers</button>
                             <button class="list-style-opt" data-list="alpha-upper">A. Uppercase</button>
                             <button class="list-style-opt" data-list="alpha-lower">a. Lowercase</button>
                             <button class="list-style-opt" data-list="roman-upper">I. Roman upper</button>
                             <button class="list-style-opt" data-list="roman-lower">i. Roman lower</button>
+                            <div class="list-menu-divider"></div>
+                            <button class="list-style-opt" data-list="none">&#10005; Remove List</button>
                         </div>
                     </div>
                     <button data-textalign="left" title="Align text left"><svg class="ribbon-svg-icon"><use href="#icon-align-text-left"/></svg></button>
