@@ -6142,11 +6142,16 @@ function setTextBoxContent(div, obj, slideIndex = state.current) {
         const commentState = { inBlockComment: false };
         const lineIndents = obj.paragraphIndents && obj.paragraphIndents.length === lines.length
             ? obj.paragraphIndents : lines.map(() => 0);
+        // Empty lines (blank or just a <br>) never get a bullet/number marker
+        const effectiveType = (idx) => {
+            if (!obj.isCode && lines[idx].replace(/<br\s*\/?>/gi, "").trim() === "") return "none";
+            return lineTypes[idx] || obj.list;
+        };
         let i = 0;
         while (i < lines.length) {
-            const curType = lineTypes[i] || obj.list;
+            const curType = effectiveType(i);
             const block = createListBlock(curType);
-            while (i < lines.length && (lineTypes[i] || obj.list) === curType) {
+            while (i < lines.length && effectiveType(i) === curType) {
                 const li = document.createElement("li");
                 if (obj.isCode) li.innerHTML = codeLineToHtml(lines[i], obj.codeLang, commentState);
                 else li.innerHTML = lines[i];
