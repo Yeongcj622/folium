@@ -656,6 +656,9 @@ body {
 [data-list-type="none"] { padding-left: 0 !important; margin: 0; }
 [data-list-type="none"] > li { padding-left: 0 !important; }
 [data-list-type="none"] > li::before { content: "" !important; }
+/* Empty lines in a list: visible height but no bullet/number marker */
+[data-list-type] > li[data-empty-line="1"]::before { content: "" !important; }
+
 /* PowerPoint-style multi-level bullets: indent 1 = circle, indent 2 = square */
 [data-list-type="bullet"]      > li::before { content: "\2022\00a0"; }
 [data-list-type="bullet"]      > li[data-indent="1"]::before { content: "\25E6\00a0"; }

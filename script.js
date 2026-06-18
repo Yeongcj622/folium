@@ -6142,19 +6142,23 @@ function setTextBoxContent(div, obj, slideIndex = state.current) {
         const commentState = { inBlockComment: false };
         const lineIndents = obj.paragraphIndents && obj.paragraphIndents.length === lines.length
             ? obj.paragraphIndents : lines.map(() => 0);
-        // Empty lines (blank or just a <br>) never get a bullet/number marker
-        const effectiveType = (idx) => {
-            if (!obj.isCode && lines[idx].replace(/<br\s*\/?>/gi, "").trim() === "") return "none";
-            return lineTypes[idx] || obj.list;
-        };
         let i = 0;
         while (i < lines.length) {
-            const curType = effectiveType(i);
+            const curType = lineTypes[i] || obj.list;
             const block = createListBlock(curType);
-            while (i < lines.length && effectiveType(i) === curType) {
+            while (i < lines.length && (lineTypes[i] || obj.list) === curType) {
                 const li = document.createElement("li");
-                if (obj.isCode) li.innerHTML = codeLineToHtml(lines[i], obj.codeLang, commentState);
-                else li.innerHTML = lines[i];
+                // Empty lines stay in the list block (for proper line height) but
+                // get data-empty-line so CSS suppresses the bullet/number marker.
+                const isEmpty = !obj.isCode && lines[i].replace(/<br\s*\/?>/gi, "").trim() === "";
+                if (isEmpty) {
+                    li.dataset.emptyLine = "1";
+                    li.innerHTML = "<br>"; // <br> gives the li visible height
+                } else if (obj.isCode) {
+                    li.innerHTML = codeLineToHtml(lines[i], obj.codeLang, commentState);
+                } else {
+                    li.innerHTML = lines[i];
+                }
                 const indent = lineIndents[i] || 0;
                 if (indent > 0) { li.dataset.indent = String(indent); li.style.paddingLeft = (indent * 1.4) + "em"; }
                 block.appendChild(li);
@@ -6205,7 +6209,8 @@ function getTextBoxContent(div, obj) {
             const t = block.dataset.listType || (block.tagName === "OL" ? "number" : "bullet");
             for (const li of block.children) {
                 if (li.tagName === "LI") {
-                    lines.push(obj.isCode ? getCodeText(li) : li.innerHTML);
+                    // Empty-line markers store a <br> for height — read back as ""
+                    lines.push(obj.isCode ? getCodeText(li) : (li.dataset.emptyLine ? "" : li.innerHTML));
                     types.push(t);
                     indents.push(parseInt(li.dataset.indent || "0", 10));
                 }
