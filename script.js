@@ -4657,7 +4657,8 @@ function applyListStyle(type) {
         if (!range0 || range0.collapsed) {
             // Cursor only: convert just the current line
             newLineHtmls = lineHtmls;
-            newTypes = lineHtmls.map((_, i) => i === cursorLine ? type : "none");
+            // Empty lines never receive a list marker
+            newTypes = lineHtmls.map((html, i) => (i === cursorLine && html.trim()) ? type : "none");
             focusIdx = cursorLine;
         } else {
             // Selection: apply only to the lines covered by the selection
@@ -4666,7 +4667,8 @@ function applyListStyle(type) {
             // If selection ends at offset 0 of a new line, don't include that line
             const lastLine = (range0.endOffset === 0 && selEnd > selStart) ? selEnd - 1 : selEnd;
             newLineHtmls = lineHtmls;
-            newTypes = lineHtmls.map((_, i) => (i >= selStart && i <= lastLine) ? type : "none");
+            // Empty lines in the selection stay unmarked
+            newTypes = lineHtmls.map((html, i) => (i >= selStart && i <= lastLine && html.trim()) ? type : "none");
             focusIdx = selStart;
         }
 
@@ -4752,7 +4754,8 @@ function applyListStyle(type) {
     pushHistory();
     const affectedSet = new Set(affectedLis);
     const newTypes = allLis.map((li) => {
-        if (affectedSet.has(li)) return type;
+        // Empty lines never receive a list marker
+        if (affectedSet.has(li)) return (li.textContent.trim() ? type : "none");
         return li.closest("ul,ol")?.dataset.listType || editObj.list || "bullet";
     });
 
@@ -6446,52 +6449,21 @@ function enterTextEditMode(div, obj, skipInitialSelectAll = false, deferFocus = 
                     }
 
                     if (!li.textContent.trim() && !li.querySelector("img")) {
-                        // Empty item → exit list (de-list this item, keep cursor here)
-                        const allLisE = [...div.querySelectorAll("li")];
-                        const liIdxE = allLisE.indexOf(li);
-                        const curTypesE = allLisE.map(el => el.closest("ul,ol")?.dataset.listType || obj.list || "bullet");
-                        const newTypesE = [...curTypesE];
-                        newTypesE[liIdxE] = "none";
-
-                        if (newTypesE.every(t => t === "none")) {
-                            const lineHtmlsE = allLisE.map(el => el.innerHTML.replace(/^<br\s*\/?>$/i, ""));
-                            div.innerHTML = lineHtmlsE.join("<br>");
+                        // Empty bullet → remove it entirely and exit the list
+                        const listEl = li.closest("ul,ol");
+                        li.remove();
+                        if (listEl && !listEl.querySelector("li")) listEl.remove();
+                        if (!div.querySelector("li")) {
                             obj.list = "none";
                             delete obj.paragraphListTypes;
                             delete obj.paragraphIndents;
-                            // Cursor at the converted line position
-                            let node = div.childNodes[liIdxE * 2] || div.lastChild || div;
-                            const re = document.createRange();
-                            re.setStart(node, 0); re.collapse(true);
-                            sel.removeAllRanges(); sel.addRange(re);
-                            syncContent();
-                            return;
                         }
-
-                        const itemsE = allLisE.map((el, i) => ({ html: el.innerHTML.replace(/^<br\s*\/?>$/i, ""), type: newTypesE[i] }));
-                        div.innerHTML = "";
-                        let bi = 0;
-                        while (bi < itemsE.length) {
-                            const cType = itemsE[bi].type;
-                            const block = createListBlock(cType);
-                            while (bi < itemsE.length && itemsE[bi].type === cType) {
-                                const newLiE = document.createElement("li");
-                                newLiE.innerHTML = itemsE[bi].html;
-                                block.appendChild(newLiE);
-                                bi++;
-                            }
-                            div.appendChild(block);
-                        }
-                        const tcE = {};
-                        newTypesE.forEach(t => { tcE[t] = (tcE[t] || 0) + 1; });
-                        const nnE = Object.entries(tcE).filter(([t]) => t !== "none");
-                        obj.list = nnE.length ? nnE.sort((a, b) => b[1] - a[1])[0][0] : (obj.list && obj.list !== "none" ? obj.list : "bullet");
-                        const convLi = div.querySelectorAll("li")[liIdxE];
-                        if (convLi) {
-                            const re2 = document.createRange();
-                            re2.setStart(convLi, 0); re2.collapse(true);
-                            sel.removeAllRanges(); sel.addRange(re2);
-                        }
+                        // Place cursor after the last remaining block
+                        const re = document.createRange();
+                        if (div.lastChild) re.setStartAfter(div.lastChild);
+                        else re.setStart(div, 0);
+                        re.collapse(true);
+                        sel.removeAllRanges(); sel.addRange(re);
                         syncContent();
                         return;
                     }
