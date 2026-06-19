@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 160" width="400" height="160">
+  <defs>
+    <!-- Background -->
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#c4e9f8"/>
+      <stop offset="100%" stop-color="#ddf4fc"/>
+    </linearGradient>
+
+    <!-- Blue ring gradient (lighter top-left, darker bottom-right) -->
+    <radialGradient id="ringGrad" cx="38%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#4dc3f0"/>
+      <stop offset="60%" stop-color="#1a9fd4"/>
+      <stop offset="100%" stop-color="#0d73aa"/>
+    </radialGradient>
+
+    <!-- Dark slice / shadow on ring right side -->
+    <radialGradient id="ringDark" cx="70%" cy="65%" r="50%">
+      <stop offset="0%" stop-color="#0a5c8a" stop-opacity="0.7"/>
+      <stop offset="100%" stop-color="#0a5c8a" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- Inner circle gradient (silvery) -->
+    <radialGradient id="innerGrad" cx="40%" cy="35%" r="65%">
+      <stop offset="0%" stop-color="#f4f4f4"/>
+      <stop offset="55%" stop-color="#e0e0e0"/>
+      <stop offset="100%" stop-color="#c4c4c4"/>
+    </radialGradient>
+
+    <!-- Inner circle shadow ring -->
+    <radialGradient id="innerShadow" cx="50%" cy="50%" r="50%">
+      <stop offset="70%" stop-color="transparent"/>
+      <stop offset="100%" stop-color="rgba(0,0,0,0.18)"/>
+    </radialGradient>
+
+    <!-- Pill gradient -->
+    <linearGradient id="pillGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#eaf6fd"/>
+      <stop offset="100%" stop-color="#c8e8f5"/>
+    </linearGradient>
+
+    <!-- Drop shadow for circle -->
+    <filter id="circleShadow" x="-25%" y="-25%" width="150%" height="150%">
+      <feDropShadow dx="3" dy="5" stdDeviation="6" flood-color="rgba(0,80,140,0.30)"/>
+    </filter>
+
+    <!-- Drop shadow for pill -->
+    <filter id="pillShadow" x="-5%" y="-15%" width="110%" height="130%">
+      <feDropShadow dx="2" dy="4" stdDeviation="5" flood-color="rgba(0,80,140,0.18)"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="400" height="160" rx="14" fill="url(#bgGrad)"/>
+
+  <!-- Pill shape (behind circle visually but drawn first) -->
+  <rect x="72" y="30" width="306" height="100" rx="50" fill="url(#pillGrad)" filter="url(#pillShadow)"/>
+
+  <!-- Pill inner highlight line (top edge gloss) -->
+  <rect x="120" y="33" width="230" height="3" rx="1.5" fill="rgba(255,255,255,0.55)"/>
+
+  <!-- Outer blue ring -->
+  <circle cx="90" cy="80" r="68" fill="url(#ringGrad)" filter="url(#circleShadow)"/>
+
+  <!-- Dark accent on bottom-right of ring (3D depth effect) -->
+  <circle cx="90" cy="80" r="68" fill="url(#ringDark)"/>
+
+  <!-- Inner circle (silvery) -->
+  <circle cx="90" cy="80" r="50" fill="url(#innerGrad)"/>
+
+  <!-- Inner circle inset shadow ring -->
+  <circle cx="90" cy="80" r="50" fill="url(#innerShadow)"/>
+
+  <!-- Number "3" -->
+  <text
+    x="90" y="100"
+    text-anchor="middle"
+    font-family="Arial Black, 'Arial Bold', Impact, sans-serif"
+    font-size="52"
+    font-weight="900"
+    fill="#2a2a2a"
+    letter-spacing="-1"
+  >3</text>
+
+  <!-- "Sabah" label -->
+  <text
+    x="240" y="99"
+    text-anchor="middle"
+    font-family="Arial Black, 'Arial Bold', Impact, sans-serif"
+    font-size="52"
+    font-weight="900"
+    fill="#111111"
+    letter-spacing="-1"
+  >Sabah</text>
+</svg>

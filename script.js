@@ -12,7 +12,8 @@ const svgNS = "http://www.w3.org/2000/svg";
 // Shape types (besides "text") that can hold a typed text label
 const TEXT_CAPABLE_SHAPES = ["rect", "roundrect", "ellipse", "triangle", "equilTriangle", "rightTriangle", "diamond", "pentagon", "hexagon", "heptagon", "decagon", "dodecagon", "star", "heart", "speech",
     "parallelogram", "trapezoid", "octagon", "cross", "rightArrow", "leftArrow", "upArrow", "downArrow", "cylinder",
-    "doubleArrow", "chevron", "lightningBolt", "donut", "pie", "blockArc", "moon", "cloud", "noSymbol"];
+    "doubleArrow", "chevron", "lightningBolt", "donut", "pie", "blockArc", "moon", "cloud", "noSymbol",
+    "starburst", "snipRect", "pentagonArrow", "funnel", "gear", "frameRect", "wave", "semicircle", "ovalCallout", "thoughtBubble", "badgeCircle"];
 // Polygon-based shapes whose outline is a simple list of points
 const POLYGON_SHAPES = ["parallelogram", "trapezoid", "octagon", "cross", "rightArrow", "leftArrow", "upArrow", "downArrow"];
 const TEXT_CAPABLE_TYPES = ["text", ...TEXT_CAPABLE_SHAPES];
@@ -339,6 +340,28 @@ let redoStack = [];
 let historyTimer = null;
 let spellcheckEnabled = true;
 
+// ── Multi-language support ───────────────────────────────────────────────────
+// Language definitions. dictCode = code used by the Free Dictionary API.
+// bcp = BCP-47 tag set on contenteditable divs for browser native spellcheck.
+const LANGUAGES = [
+    { code: "en",    bcp: "en",    name: "English",    flag: "🇺🇸", dictCode: "en"    },
+    { code: "es",    bcp: "es",    name: "Español",    flag: "🇪🇸", dictCode: "es"    },
+    { code: "fr",    bcp: "fr",    name: "Français",   flag: "🇫🇷", dictCode: "fr"    },
+    { code: "de",    bcp: "de",    name: "Deutsch",    flag: "🇩🇪", dictCode: "de"    },
+    { code: "it",    bcp: "it",    name: "Italiano",   flag: "🇮🇹", dictCode: "it"    },
+    { code: "pt",    bcp: "pt",    name: "Português",  flag: "🇧🇷", dictCode: "pt-BR" },
+    { code: "ru",    bcp: "ru",    name: "Русский",    flag: "🇷🇺", dictCode: "ru"    },
+    { code: "ar",    bcp: "ar",    name: "العربية",    flag: "🇸🇦", dictCode: "ar"    },
+    { code: "hi",    bcp: "hi",    name: "हिन्दी",    flag: "🇮🇳", dictCode: "hi"    },
+    { code: "ko",    bcp: "ko",    name: "한국어",     flag: "🇰🇷", dictCode: "ko"    },
+    { code: "ja",    bcp: "ja",    name: "日本語",     flag: "🇯🇵", dictCode: "ja"    },
+    { code: "zh",    bcp: "zh-CN", name: "中文",       flag: "🇨🇳", dictCode: "zh"    },
+    { code: "tr",    bcp: "tr",    name: "Türkçe",     flag: "🇹🇷", dictCode: "tr"    },
+];
+// Languages for which the browser's native spellcheck is used instead of our
+// custom English-only SC. All non-English languages use native.
+var appLanguage = localStorage.getItem("folium_lang") || "en";
+
 function snapshotState() {
     return JSON.stringify({ slides: state.slides, current: state.current, slideW: SLIDE_W, slideH: SLIDE_H,
         headerText: state.headerText, footerText: state.footerText });
@@ -528,6 +551,23 @@ const ICON_LIBRARY = [
   {id:"photo",           cat:"Media",         label:"Photo",           d:"M21 19V5a2 2 0 00-2-2H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2zm-12.5-5.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"},
   {id:"film",            cat:"Media",         label:"Film / Video",    d:"M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V4h-4z"},
   {id:"subtitle",        cat:"Media",         label:"Subtitles",       d:"M20 4H4a2 2 0 00-2 2v12a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2zm-8 11H4v-2h8v2zm8 0h-6v-2h6v2zm0-4H4v-2h16v2z"},
+  // MAPS
+  {id:"map-world",        cat:"Maps", label:"World Map",
+   d:"M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.78L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"},
+  {id:"map-africa",       cat:"Maps", label:"Africa",
+   d:"M6 2C9.5 1.5 14 1.5 18 3 20 4.5 21 7 21 8.5L22.5 9.5C21 11.5 21 13.5 21.5 16.5 22 19.5 20.5 22.5 18 23.5 16 24 14 24 12.5 23.5 11 23 9 22 7.5 20.5 5.5 19 4 17 3.5 15 3 12.5 3.5 10.5 4 9 4.5 7 4 5 5.5 3.5 5.5 2.8 6 2Z"},
+  {id:"map-north-america",cat:"Maps", label:"North America",
+   d:"M2.5 7C2 4 5 1.5 9 1.5 13 1.5 17.5 2.5 21 5 23 7 23.5 10.5 22.5 13 22 14 23 15 22 17 21 19 19.5 21 18 22L16.5 23C15 22.5 14 21.5 13.5 20.5 12.5 19 11 18 10 17.5 8 17 6.5 16 5.5 14 4 12 3.5 10 3 8Z"},
+  {id:"map-south-america",cat:"Maps", label:"South America",
+   d:"M8 2C11 1 14 1.5 16.5 3 18.5 4.5 20 7 21 10 22 12.5 22.5 14.5 22 16.5 21 19 19.5 21 17.5 22.5 16 23.5 14.5 23.5 13 23 11.5 22.5 10.5 22 10 20.5 10 19 10.5 18 10 17 9 15 8 13.5 7.5 11.5 6.5 9 6.5 6.5 7 4 7.5 2.5 8 2Z"},
+  {id:"map-europe",       cat:"Maps", label:"Europe",
+   d:"M10 1.5C13 1 16.5 1.5 20 4 22 5.5 23 8 22 11 21 12.5 22 14 20.5 15.5 19.5 16.5 18 17 16.5 17 15.5 17 15 18 15 20 14 21 13 21 12.5 19.5 12 18 11.5 17 10.5 17 9 17.5 7.5 17.5 6.5 16.5 5 15 4.5 13 5.5 11 5 9 3.5 7 5 5 7 3 8.5 2 10 1.5Z"},
+  {id:"map-asia",         cat:"Maps", label:"Asia",
+   d:"M4 3.5C7 2 12 1.5 17 2 20 2.5 23 4.5 23.5 8 23 10.5 22 13 21 15 20.5 16.5 19.5 17.5 19 19 17.5 21 16 23 14 23.5 12.5 23.5 12 22 12 20.5 11.5 21.5 10 23 8 23.5 6.5 23 6 21.5 7 20 7.5 18.5 6.5 17.5 5 16.5 3.5 15 3 12.5 3.5 11 4.5 9 5.5 8 5 7 4.5 5 4 4 4 3.5Z"},
+  {id:"map-australia",    cat:"Maps", label:"Australia",
+   d:"M3.5 9C4 6 6.5 4 9.5 3.5 11.5 3.5 13 3.5 14 4L14 6.5 16.5 6.5 16.5 4C18.5 4 21 5.5 22 8 23 10.5 23 14 22 16.5 21 19 19 21.5 17.5 22.5 15 23.5 11.5 23.5 8.5 22 6 20.5 4 18 3.5 15 3 12.5 3 10.5 3.5 9Z"},
+  {id:"map-antarctica",   cat:"Maps", label:"Antarctica",
+   d:"M5 12C4 9 5.5 5.5 8.5 3.5 11 2 14 2 16.5 3.5 19.5 5.5 22 9 22.5 12.5 23 16 21.5 19.5 19 21.5 17 23 14.5 23.5 12 23 9 22.5 6.5 21.5 5.5 20 4.5 18.5 4 16 4 14 3.5 13.5 4.5 12.5 5 12Z"},
 ];
 
 // ============ Default object factory ============
@@ -565,6 +605,12 @@ function makeObject(type, x, y, w, h) {
     }
     if (type === "roundrect") {
         base.cornerRadius = 0.15;
+    }
+    if (type === "badgeCircle") {
+        base.fill = { type: "solid", color: "#1a90d4" };
+        base.stroke = { color: "none", width: 0, dash: "solid" };
+        base.innerRadius = 0.65;
+        base.innerFill = "#e8e8e8";
     }
     if (TEXT_CAPABLE_SHAPES.includes(type)) {
         base.text = "";
@@ -648,6 +694,9 @@ function render() {
     }
     renderSlidesPanel();
     scheduleAutosave();
+    renderAnimBadges();
+    updateTransitionsRibbon();
+    updateStatusBar();
 }
 
 // ============ Header & Footer ============
@@ -742,6 +791,7 @@ function resolveColor(f, id, defs) {
             const stop = document.createElementNS(svgNS, "stop");
             stop.setAttribute("offset", s.pos + "%");
             stop.setAttribute("stop-color", s.color);
+            if ((s.opacity ?? 100) < 100) stop.setAttribute("stop-opacity", (s.opacity / 100).toFixed(3));
             grad.appendChild(stop);
         });
         defs.appendChild(grad);
@@ -913,6 +963,22 @@ function shapePolygonPoints(type, x, y, w, h) {
                 [x + w * 0.78, y + h * 0.48], [x + w * 0.55, y + h * 0.48]
             ];
         }
+        case "snipRect": {
+            const snip = Math.min(w, h) * 0.22;
+            return [[x, y], [x + w - snip, y], [x + w, y + snip], [x + w, y + h], [x, y + h]];
+        }
+        case "pentagonArrow": {
+            const tip = w * 0.26;
+            return [[x, y], [x + w - tip, y], [x + w, y + h / 2], [x + w - tip, y + h], [x, y + h]];
+        }
+        case "funnel": {
+            const tw = w * 0.13, bodyH = h * 0.72;
+            return [
+                [x, y], [x + w, y],
+                [x + w / 2 + tw, y + bodyH], [x + w / 2 + tw, y + h],
+                [x + w / 2 - tw, y + h], [x + w / 2 - tw, y + bodyH]
+            ];
+        }
     }
     return null;
 }
@@ -920,7 +986,8 @@ function shapePolygonPoints(type, x, y, w, h) {
 const EDIT_POINTS_SHAPE_TYPES = [
     "triangle", "equilTriangle", "rightTriangle", "star", "diamond", "pentagon", "hexagon", "heptagon", "decagon", "dodecagon",
     "parallelogram", "trapezoid", "octagon", "cross",
-    "rightArrow", "leftArrow", "upArrow", "downArrow", "doubleArrow", "chevron", "lightningBolt"
+    "rightArrow", "leftArrow", "upArrow", "downArrow", "doubleArrow", "chevron", "lightningBolt",
+    "starburst", "snipRect", "pentagonArrow", "funnel"
 ];
 
 // returns an array of [x,y] absolute points for a polygon-rendered shape,
@@ -932,7 +999,8 @@ function getShapePoints(obj) {
     switch (obj.type) {
         case "triangle": pts = [[cx, y], [x + w, y + h], [x, y + h]]; break;
         case "star": {
-            const outerR = Math.min(w, h) / 2, innerR = Math.min(w, h) / 4, n = obj.points || 5;
+            const outerR = Math.min(w, h) / 2, n = obj.points || 5;
+            const innerR = outerR * (obj.innerRatio ?? 0.5);
             pts = [];
             for (let i = 0; i < n * 2; i++) {
                 const r = i % 2 === 0 ? outerR : innerR;
@@ -954,6 +1022,85 @@ function getShapePoints(obj) {
         }
         case "rightTriangle": pts = [[x, y], [x + w, y + h], [x, y + h]]; break;
         case "equilTriangle": pts = [[cx, y], [x + w, y + h], [x, y + h]]; break;
+        case "starburst": {
+            const n = 8, innerRatio = obj.innerRatio ?? 0.22;
+            pts = [];
+            for (let i = 0; i < n * 2; i++) {
+                const ang = (Math.PI / n) * i - Math.PI / 2;
+                const isOuter = i % 2 === 0;
+                pts.push([cx + (isOuter ? w / 2 : w * innerRatio) * Math.cos(ang),
+                          cy + (isOuter ? h / 2 : h * innerRatio) * Math.sin(ang)]);
+            }
+            break;
+        }
+        case "parallelogram": {
+            const o = w * (obj.slant ?? 0.25);
+            pts = [[x+o, y], [x+w, y], [x+w-o, y+h], [x, y+h]]; break;
+        }
+        case "trapezoid": {
+            const o = w * (obj.topInset ?? 0.2);
+            pts = [[x+o, y], [x+w-o, y], [x+w, y+h], [x, y+h]]; break;
+        }
+        case "cross": {
+            const arm = obj.armW ?? 0.33;
+            const tx = w * arm, ty = h * arm;
+            pts = [
+                [x+tx, y], [x+w-tx, y], [x+w-tx, y+ty], [x+w, y+ty], [x+w, y+h-ty], [x+w-tx, y+h-ty],
+                [x+w-tx, y+h], [x+tx, y+h], [x+tx, y+h-ty], [x, y+h-ty], [x, y+ty], [x+tx, y+ty]
+            ]; break;
+        }
+        case "rightArrow": {
+            const headW = w * (obj.headW ?? 0.35), bodyH = h * (obj.bodyH ?? 0.5);
+            const bodyY = y + (h - bodyH) / 2;
+            pts = [[x, bodyY], [x+w-headW, bodyY], [x+w-headW, y], [x+w, y+h/2],
+                   [x+w-headW, y+h], [x+w-headW, bodyY+bodyH], [x, bodyY+bodyH]]; break;
+        }
+        case "leftArrow": {
+            const headW = w * (obj.headW ?? 0.35), bodyH = h * (obj.bodyH ?? 0.5);
+            const bodyY = y + (h - bodyH) / 2;
+            pts = [[x+w, bodyY], [x+headW, bodyY], [x+headW, y], [x, y+h/2],
+                   [x+headW, y+h], [x+headW, bodyY+bodyH], [x+w, bodyY+bodyH]]; break;
+        }
+        case "upArrow": {
+            const headH = h * (obj.headH ?? 0.35), bodyW = w * (obj.bodyW ?? 0.5);
+            const bodyX = x + (w - bodyW) / 2;
+            pts = [[bodyX, y+h], [bodyX, y+headH], [x, y+headH], [x+w/2, y],
+                   [x+w, y+headH], [bodyX+bodyW, y+headH], [bodyX+bodyW, y+h]]; break;
+        }
+        case "downArrow": {
+            const headH = h * (obj.headH ?? 0.35), bodyW = w * (obj.bodyW ?? 0.5);
+            const bodyX = x + (w - bodyW) / 2;
+            pts = [[bodyX, y], [bodyX, y+h-headH], [x, y+h-headH], [x+w/2, y+h],
+                   [x+w, y+h-headH], [bodyX+bodyW, y+h-headH], [bodyX+bodyW, y]]; break;
+        }
+        case "doubleArrow": {
+            const headW = w * (obj.headW ?? 0.2), bodyH = h * (obj.bodyH ?? 0.5);
+            const bodyY = y + (h - bodyH) / 2;
+            pts = [
+                [x, y+h/2], [x+headW, y], [x+headW, bodyY], [x+w-headW, bodyY], [x+w-headW, y], [x+w, y+h/2],
+                [x+w-headW, y+h], [x+w-headW, bodyY+bodyH], [x+headW, bodyY+bodyH], [x+headW, y+h]
+            ]; break;
+        }
+        case "chevron": {
+            const notch = w * (obj.notchDepth ?? 0.35);
+            pts = [[x, y], [x+w-notch, y], [x+w, y+h/2], [x+w-notch, y+h], [x, y+h], [x+notch, y+h/2]]; break;
+        }
+        case "snipRect": {
+            const snip = Math.min(w, h) * (obj.snip ?? 0.22);
+            pts = [[x, y], [x+w-snip, y], [x+w, y+snip], [x+w, y+h], [x, y+h]]; break;
+        }
+        case "pentagonArrow": {
+            const tip = w * (obj.tipW ?? 0.26);
+            pts = [[x, y], [x+w-tip, y], [x+w, y+h/2], [x+w-tip, y+h], [x, y+h]]; break;
+        }
+        case "funnel": {
+            const stem = w * (obj.stemW ?? 0.13), bodyH = h * 0.72;
+            pts = [
+                [x, y], [x+w, y],
+                [x+w/2+stem, y+bodyH], [x+w/2+stem, y+h],
+                [x+w/2-stem, y+h], [x+w/2-stem, y+bodyH]
+            ]; break;
+        }
         default:
             pts = shapePolygonPoints(obj.type, x, y, w, h);
     }
@@ -1363,8 +1510,9 @@ function ellipsePoint(cx, cy, rx, ry, deg) {
 }
 
 // a ring (donut) - outer ellipse with a smaller concentric hole, drawn with fill-rule evenodd
-function donutPath(x, y, w, h) {
-    const cx = x + w / 2, cy = y + h / 2, rx = w / 2, ry = h / 2, irx = rx * 0.55, iry = ry * 0.55;
+function donutPath(x, y, w, h, innerRadius = 0.55) {
+    const cx = x + w / 2, cy = y + h / 2, rx = w / 2, ry = h / 2;
+    const irx = rx * innerRadius, iry = ry * innerRadius;
     return `M${cx - rx},${cy} A${rx},${ry} 0 1 0 ${cx + rx},${cy} A${rx},${ry} 0 1 0 ${cx - rx},${cy} Z `
          + `M${cx - irx},${cy} A${irx},${iry} 0 1 0 ${cx + irx},${cy} A${irx},${iry} 0 1 0 ${cx - irx},${cy} Z`;
 }
@@ -1379,8 +1527,9 @@ function piePath(x, y, w, h, startDeg = -90, endDeg = 180) {
 }
 
 // a partial ring spanning from startDeg to endDeg (PowerPoint "Block Arc")
-function blockArcPath(x, y, w, h, startDeg = -90, endDeg = 180) {
-    const cx = x + w / 2, cy = y + h / 2, rx = w / 2, ry = h / 2, irx = rx * 0.6, iry = ry * 0.6;
+function blockArcPath(x, y, w, h, startDeg = -90, endDeg = 180, innerRadius = 0.6) {
+    const cx = x + w / 2, cy = y + h / 2, rx = w / 2, ry = h / 2;
+    const irx = rx * innerRadius, iry = ry * innerRadius;
     const [sx, sy] = ellipsePoint(cx, cy, rx, ry, startDeg);
     const [ex, ey] = ellipsePoint(cx, cy, rx, ry, endDeg);
     const [iex, iey] = ellipsePoint(cx, cy, irx, iry, endDeg);
@@ -1558,6 +1707,56 @@ function heartPath(x, y, w, h) {
         C${x + w},${y} ${cx},${y} ${cx},${y + h * 0.3} Z`;
 }
 
+function gearPath(x, y, w, h, innerRadius = 0.26) {
+    const cx = x + w / 2, cy = y + h / 2;
+    const teeth = 8, half = (Math.PI / teeth) * 0.38;
+    const ox = w / 2 * 0.97, oy = h / 2 * 0.97;
+    const ix = ox * 0.72, iy = oy * 0.72;
+    const hx = ox * innerRadius, hy = oy * innerRadius;
+    let d = "";
+    for (let i = 0; i < teeth; i++) {
+        const a = (2 * Math.PI / teeth) * i - Math.PI / 2;
+        const a1 = a - half, a2 = a + half;
+        const na1 = (2 * Math.PI / teeth) * (i + 1) - Math.PI / 2 - half;
+        const p = (a, rx, ry) => `${cx + rx * Math.cos(a)},${cy + ry * Math.sin(a)}`;
+        if (i === 0) d += `M${p(a1, ox, oy)}`;
+        else d += `L${p(a1, ox, oy)}`;
+        d += ` L${p(a2, ox, oy)} L${p(a2, ix, iy)} A${ix},${iy} 0 0 1 ${p(na1, ix, iy)}`;
+    }
+    d += ` Z M${cx + hx},${cy} A${hx},${hy} 0 1 0 ${cx - hx},${cy} A${hx},${hy} 0 1 0 ${cx + hx},${cy} Z`;
+    return d;
+}
+
+function frameRectPath(x, y, w, h, frameThick = 0.15) {
+    const t = Math.min(w, h) * frameThick;
+    return `M${x},${y} L${x+w},${y} L${x+w},${y+h} L${x},${y+h} Z M${x+t},${y+t} L${x+w-t},${y+t} L${x+w-t},${y+h-t} L${x+t},${y+h-t} Z`;
+}
+
+function thoughtBubblePath(x, y, w, h) {
+    const bh = h * 0.74;
+    const body = `M${x+w*0.22},${y+bh} A${w*0.18},${bh*0.42} 0 1 1 ${x+w*0.32},${y+h*0.3} A${w*0.22},${bh*0.44} 0 1 1 ${x+w*0.62},${y+h*0.2} A${w*0.2},${bh*0.42} 0 1 1 ${x+w*0.85},${y+bh*0.84} A${w*0.16},${bh*0.34} 0 1 1 ${x+w*0.76},${y+bh} L${x+w*0.25},${y+bh} A${w*0.16},${bh*0.34} 0 1 1 ${x+w*0.22},${y+bh} Z`;
+    const r1 = Math.min(w, h) * 0.062, r2 = Math.min(w, h) * 0.038;
+    const c1x = x + w * 0.3, c1y = y + h * 0.84;
+    const c2x = x + w * 0.19, c2y = y + h * 0.955;
+    return `${body} M${c1x+r1},${c1y} A${r1},${r1} 0 1 0 ${c1x-r1},${c1y} A${r1},${r1} 0 1 0 ${c1x+r1},${c1y} Z M${c2x+r2},${c2y} A${r2},${r2} 0 1 0 ${c2x-r2},${c2y} A${r2},${r2} 0 1 0 ${c2x+r2},${c2y} Z`;
+}
+
+function wavePath(x, y, w, h, waveAmp = 0.15) {
+    const amp = h * waveAmp, q = w / 4;
+    return `M${x},${y} L${x+w},${y} L${x+w},${y+h-amp} C${x+w-q},${y+h-amp} ${x+w-q},${y+h+amp} ${x+w/2},${y+h} C${x+q},${y+h} ${x+q},${y+h-amp*2} ${x},${y+h-amp} Z`;
+}
+
+function semicirclePath(x, y, w, h) {
+    return `M${x},${y+h} A${w/2},${h} 0 0 1 ${x+w},${y+h} Z`;
+}
+
+function ovalCalloutPath(x, y, w, h) {
+    const bh = h * 0.78, cx = x + w / 2, cy = y + bh / 2, rx = w / 2, ry = bh / 2;
+    const oval = `M${cx-rx},${cy} A${rx},${ry} 0 1 1 ${cx+rx},${cy} A${rx},${ry} 0 1 1 ${cx-rx},${cy} Z`;
+    const tx1 = x + w * 0.25, tx2 = x + w * 0.42, ty = y + bh;
+    return `${oval} M${tx1},${ty} L${x+w*0.13},${y+h} L${tx2},${ty} Z`;
+}
+
 // Flipping a rotated object should mirror it left-right (or top-to-bottom)
 // as seen on screen, not in its own rotated local axes - which would look
 // like flipping along a diagonal once rotated. A screen-space mirror of a
@@ -1682,11 +1881,45 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
         case "doubleArrow":
         case "chevron":
         case "lightningBolt":
+        case "snipRect":
+        case "pentagonArrow":
+        case "funnel":
             shape = document.createElementNS(svgNS, "polygon");
             applyAttrs(shape, {
                 points: getShapePoints(obj).map(p => p.join(",")).join(" "),
                 fill, ...sAttrs
             });
+            break;
+        case "starburst":
+            shape = document.createElementNS(svgNS, "polygon");
+            applyAttrs(shape, {
+                points: getShapePoints(obj).map(p => p.join(",")).join(" "),
+                fill, ...sAttrs
+            });
+            break;
+        case "gear":
+            shape = document.createElementNS(svgNS, "path");
+            applyAttrs(shape, { d: gearPath(obj.x, obj.y, obj.w, obj.h, obj.innerRadius ?? 0.26), "fill-rule": "evenodd", fill, ...sAttrs });
+            break;
+        case "frameRect":
+            shape = document.createElementNS(svgNS, "path");
+            applyAttrs(shape, { d: frameRectPath(obj.x, obj.y, obj.w, obj.h, obj.frameThick ?? 0.15), "fill-rule": "evenodd", fill, ...sAttrs });
+            break;
+        case "thoughtBubble":
+            shape = document.createElementNS(svgNS, "path");
+            applyAttrs(shape, { d: thoughtBubblePath(obj.x, obj.y, obj.w, obj.h), fill, ...sAttrs });
+            break;
+        case "wave":
+            shape = document.createElementNS(svgNS, "path");
+            applyAttrs(shape, { d: wavePath(obj.x, obj.y, obj.w, obj.h, obj.waveAmp ?? 0.15), fill, ...sAttrs });
+            break;
+        case "semicircle":
+            shape = document.createElementNS(svgNS, "path");
+            applyAttrs(shape, { d: semicirclePath(obj.x, obj.y, obj.w, obj.h), fill, ...sAttrs });
+            break;
+        case "ovalCallout":
+            shape = document.createElementNS(svgNS, "path");
+            applyAttrs(shape, { d: ovalCalloutPath(obj.x, obj.y, obj.w, obj.h), fill, ...sAttrs });
             break;
         case "cylinder":
             shape = document.createElementNS(svgNS, "path");
@@ -1694,15 +1927,28 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             break;
         case "donut":
             shape = document.createElementNS(svgNS, "path");
-            applyAttrs(shape, { d: donutPath(obj.x, obj.y, obj.w, obj.h), "fill-rule": "evenodd", fill, ...sAttrs });
+            applyAttrs(shape, { d: donutPath(obj.x, obj.y, obj.w, obj.h, obj.innerRadius ?? 0.55), "fill-rule": "evenodd", fill, ...sAttrs });
             break;
+        case "badgeCircle": {
+            // Outer ring (uses obj.fill) + inner filled circle (uses obj.innerFill or white)
+            const ir = obj.innerRadius ?? 0.65;
+            const innerFillColor = obj.innerFill || "#e8e8e8";
+            const outerC = document.createElementNS(svgNS, "ellipse");
+            applyAttrs(outerC, { cx, cy, rx: obj.w / 2, ry: obj.h / 2, fill, stroke: sAttrs.stroke || "none", "stroke-width": sAttrs["stroke-width"] || 0, "stroke-dasharray": sAttrs["stroke-dasharray"] || "" });
+            const innerC = document.createElementNS(svgNS, "ellipse");
+            applyAttrs(innerC, { cx, cy, rx: obj.w / 2 * ir, ry: obj.h / 2 * ir, fill: innerFillColor, stroke: "none" });
+            shape = document.createElementNS(svgNS, "g");
+            shape.appendChild(outerC);
+            shape.appendChild(innerC);
+            break;
+        }
         case "pie":
             shape = document.createElementNS(svgNS, "path");
-            applyAttrs(shape, { d: piePath(obj.x, obj.y, obj.w, obj.h), fill, ...sAttrs });
+            applyAttrs(shape, { d: piePath(obj.x, obj.y, obj.w, obj.h, -90, -90 + (obj.angle ?? 180)), fill, ...sAttrs });
             break;
         case "blockArc":
             shape = document.createElementNS(svgNS, "path");
-            applyAttrs(shape, { d: blockArcPath(obj.x, obj.y, obj.w, obj.h), fill, ...sAttrs });
+            applyAttrs(shape, { d: blockArcPath(obj.x, obj.y, obj.w, obj.h, -90, -90 + (obj.angle ?? 270), obj.innerRadius ?? 0.6), fill, ...sAttrs });
             break;
         case "moon":
             shape = document.createElementNS(svgNS, "path");
@@ -1811,8 +2057,11 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             const div = document.createElement("div");
             div.className = "text-edit-box";
             div.setAttribute("data-id", obj.id);
-            div.setAttribute("spellcheck", spellcheckEnabled ? "true" : "false");
-            div.setAttribute("lang", "en");
+            // English → custom SC handles highlights; native checker stays off.
+            // Other languages → let the browser spell-check natively.
+            const _langEntry = LANGUAGES.find(l => l.code === appLanguage) || LANGUAGES[0];
+            div.setAttribute("spellcheck", appLanguage === "en" ? "false" : "true");
+            div.setAttribute("lang", _langEntry.bcp);
             div.style.fontFamily = `"${obj.fontFamily}", sans-serif`;
             div.style.fontSize = obj.fontSize + "px";
             div.style.color = obj.fontColor;
@@ -1820,7 +2069,18 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             div.style.fontStyle = obj.italic ? "italic" : "normal";
             div.style.textDecoration = [obj.underline && "underline", obj.strikethrough && "line-through"].filter(Boolean).join(" ") || "none";
             div.style.textAlign = obj.align || "left";
-            div.style.background = fill === "none" ? "transparent" : fill;
+            // Gradients are SVG url() refs — convert to CSS for the HTML div
+            if (obj.fill && obj.fill.type === "gradient" && obj.fill.stops) {
+                const stops = obj.fill.stops.map(s =>
+                    `${hexToRgba(s.color, s.opacity ?? 100)} ${s.pos}%`
+                ).join(", ");
+                const cssAngle = ((obj.fill.angle || 0) + 90) % 360;
+                div.style.background = (obj.fill.gradientType === "radial")
+                    ? `radial-gradient(circle at center, ${stops})`
+                    : `linear-gradient(${cssAngle}deg, ${stops})`;
+            } else {
+                div.style.background = fill === "none" ? "transparent" : fill;
+            }
             div.style.paddingLeft = (4 + (obj.indent || 0) * 16) + "px";
             div.style.paddingRight = "4px";
             div.style.paddingTop = div.style.paddingBottom = "2px";
@@ -1845,6 +2105,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             }
             applyTextEffects(div, obj);
             setTextBoxContent(div, obj, slideIndex);
+            if (spellcheckEnabled && appLanguage === "en" && !obj.isCode && !obj.isEquation && !obj.isMarkdown && !obj.isLatexBlock) SC.applyHighlights(div);
             fo.appendChild(div);
             shape = fo;
             // border for the text box (so it can be selected/seen even if empty fill)
@@ -2181,19 +2442,42 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
         g.setAttribute("opacity", (obj.opacity / 100).toFixed(2));
     }
     let filterTarget = g;
-    if (obj.shadow || obj.glow) {
+    if (obj.shadow || obj.glow || obj.innerShadow || obj.softEdge) {
         const filterId = "fx-" + obj.id;
         const filter = document.createElementNS(svgNS, "filter");
         filter.setAttribute("id", filterId);
         const region = obj.shadow && obj.shadowPerspective ? 150 : 60;
         filter.setAttribute("x", `-${region}%`); filter.setAttribute("y", `-${region}%`);
         filter.setAttribute("width", `${100 + region * 2}%`); filter.setAttribute("height", `${100 + region * 2}%`);
+
+        // Soft edge: blur SourceAlpha inward and composite SourceGraphic into it.
+        // This fades the edges to transparent. Done first so all other effects use the result.
+        let src = "SourceGraphic";
+        if (obj.softEdge) {
+            const seSize = Math.max(1, obj.softEdgeSize ?? 10);
+            const seBlurEl = document.createElementNS(svgNS, "feGaussianBlur");
+            seBlurEl.setAttribute("in", "SourceAlpha");
+            seBlurEl.setAttribute("stdDeviation", String(seSize));
+            seBlurEl.setAttribute("result", "seAlpha");
+            filter.appendChild(seBlurEl);
+            const seCompEl = document.createElementNS(svgNS, "feComposite");
+            seCompEl.setAttribute("in", "SourceGraphic");
+            seCompEl.setAttribute("in2", "seAlpha");
+            seCompEl.setAttribute("operator", "in");
+            seCompEl.setAttribute("result", "seG");
+            filter.appendChild(seCompEl);
+            src = "seG";
+        }
+
+        let lastOuterResult = null;
         if (obj.glow) {
             const glowDrop = document.createElementNS(svgNS, "feDropShadow");
+            glowDrop.setAttribute("in", src);
             glowDrop.setAttribute("dx", "0"); glowDrop.setAttribute("dy", "0");
             glowDrop.setAttribute("stdDeviation", String(obj.glowSize ?? 6));
             glowDrop.setAttribute("flood-color", obj.glowColor || "#65c8d6");
             glowDrop.setAttribute("flood-opacity", ((obj.glowOpacity ?? 85) / 100).toFixed(2));
+            if (obj.innerShadow) { glowDrop.setAttribute("result", "outerGlow"); lastOuterResult = "outerGlow"; }
             filter.appendChild(glowDrop);
         }
         if (obj.shadow) {
@@ -2205,20 +2489,78 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             if (obj.shadowPerspective) {
                 const farDist = dist * 3;
                 const far = document.createElementNS(svgNS, "feDropShadow");
+                far.setAttribute("in", src);
                 far.setAttribute("dx", (Math.cos(angleRad) * farDist).toFixed(2));
                 far.setAttribute("dy", (Math.sin(angleRad) * farDist).toFixed(2));
                 far.setAttribute("stdDeviation", String(blur * 2.5));
                 far.setAttribute("flood-color", color);
                 far.setAttribute("flood-opacity", (opacity * 0.5).toFixed(2));
+                if (obj.innerShadow) { far.setAttribute("result", "outerFar"); lastOuterResult = "outerFar"; }
                 filter.appendChild(far);
             }
             const drop = document.createElementNS(svgNS, "feDropShadow");
+            drop.setAttribute("in", src);
             drop.setAttribute("dx", (Math.cos(angleRad) * dist).toFixed(2));
             drop.setAttribute("dy", (Math.sin(angleRad) * dist).toFixed(2));
             drop.setAttribute("stdDeviation", String(blur));
             drop.setAttribute("flood-color", color);
             drop.setAttribute("flood-opacity", opacity);
+            if (obj.innerShadow) { drop.setAttribute("result", "outerDrop"); lastOuterResult = "outerDrop"; }
             filter.appendChild(drop);
+        }
+        if (obj.innerShadow) {
+            const iAngleRad = (obj.innerShadowAngle ?? 135) * Math.PI / 180;
+            const iDist = obj.innerShadowDistance ?? 4;
+            const iBlur = obj.innerShadowBlur ?? 4;
+            const iColor = obj.innerShadowColor || "#000000";
+            const iOpacity = ((obj.innerShadowOpacity ?? 50) / 100).toFixed(2);
+            const iDx = (Math.cos(iAngleRad) * iDist).toFixed(2);
+            const iDy = (Math.sin(iAngleRad) * iDist).toFixed(2);
+            const invertTransfer = document.createElementNS(svgNS, "feComponentTransfer");
+            invertTransfer.setAttribute("in", "SourceAlpha");
+            invertTransfer.setAttribute("result", "iInvAlpha");
+            const feFuncA = document.createElementNS(svgNS, "feFuncA");
+            feFuncA.setAttribute("type", "linear");
+            feFuncA.setAttribute("slope", "-1");
+            feFuncA.setAttribute("intercept", "1");
+            invertTransfer.appendChild(feFuncA);
+            filter.appendChild(invertTransfer);
+            const iBlurEl = document.createElementNS(svgNS, "feGaussianBlur");
+            iBlurEl.setAttribute("in", "iInvAlpha");
+            iBlurEl.setAttribute("stdDeviation", String(iBlur));
+            iBlurEl.setAttribute("result", "iBlurred");
+            filter.appendChild(iBlurEl);
+            const iOffsetEl = document.createElementNS(svgNS, "feOffset");
+            iOffsetEl.setAttribute("in", "iBlurred");
+            iOffsetEl.setAttribute("dx", iDx);
+            iOffsetEl.setAttribute("dy", iDy);
+            iOffsetEl.setAttribute("result", "iOffset");
+            filter.appendChild(iOffsetEl);
+            const iFloodEl = document.createElementNS(svgNS, "feFlood");
+            iFloodEl.setAttribute("flood-color", iColor);
+            iFloodEl.setAttribute("flood-opacity", iOpacity);
+            iFloodEl.setAttribute("result", "iFlood");
+            filter.appendChild(iFloodEl);
+            const iComp1 = document.createElementNS(svgNS, "feComposite");
+            iComp1.setAttribute("in", "iFlood");
+            iComp1.setAttribute("in2", "iOffset");
+            iComp1.setAttribute("operator", "in");
+            iComp1.setAttribute("result", "iColored");
+            filter.appendChild(iComp1);
+            const iComp2 = document.createElementNS(svgNS, "feComposite");
+            iComp2.setAttribute("in", "iColored");
+            iComp2.setAttribute("in2", "SourceAlpha");
+            iComp2.setAttribute("operator", "in");
+            iComp2.setAttribute("result", "iShadow");
+            filter.appendChild(iComp2);
+            const merge = document.createElementNS(svgNS, "feMerge");
+            const mn1 = document.createElementNS(svgNS, "feMergeNode");
+            mn1.setAttribute("in", lastOuterResult || src);
+            const mn2 = document.createElementNS(svgNS, "feMergeNode");
+            mn2.setAttribute("in", "iShadow");
+            merge.appendChild(mn1);
+            merge.appendChild(mn2);
+            filter.appendChild(merge);
         }
         defs.appendChild(filter);
         if (obj.type === "text" && obj.isCode) {
@@ -2399,13 +2741,88 @@ function renderSelectionOverlay() {
             g.appendChild(h);
         });
 
-        // PowerPoint-style corner-radius adjustment handle for rounded rectangles
+        // PowerPoint-style adjustment handles (yellow diamond) for shape-specific parameters
+        const mkAdj = (cx2, cy2, type) => {
+            const adj = document.createElementNS(svgNS, "circle");
+            applyAttrs(adj, { cx: cx2, cy: cy2, r: hs / 2, class: "handle adjust-handle", "data-handle": "adjust", "data-adjust-type": type, "stroke-width": sw });
+            g.appendChild(adj);
+        };
         if (obj.type === "roundrect") {
             const ratio = Math.max(0, Math.min(0.5, obj.cornerRadius ?? 0.15));
             const r = Math.min(obj.w, obj.h) * ratio;
-            const adj = document.createElementNS(svgNS, "circle");
-            applyAttrs(adj, { cx: obj.x + r, cy: obj.y, r: hs / 2, class: "handle adjust-handle", "data-handle": "adjust", "stroke-width": sw });
-            g.appendChild(adj);
+            mkAdj(obj.x + r, obj.y, "cornerRadius");
+        }
+        if (obj.type === "donut" || obj.type === "blockArc") {
+            const defaultIR = obj.type === "donut" ? 0.55 : 0.6;
+            const ir = Math.min(obj.w, obj.h) / 2 * (obj.innerRadius ?? defaultIR);
+            mkAdj(obj.x + obj.w / 2 + ir, obj.y + obj.h / 2, "innerRadius");
+        }
+        if (obj.type === "badgeCircle") {
+            const ir = Math.min(obj.w, obj.h) / 2 * (obj.innerRadius ?? 0.65);
+            mkAdj(obj.x + obj.w / 2 + ir, obj.y + obj.h / 2, "innerRadius");
+        }
+        if (obj.type === "gear") {
+            const ir = Math.min(obj.w, obj.h) / 2 * 0.97 * (obj.innerRadius ?? 0.26);
+            mkAdj(obj.x + obj.w / 2 + ir, obj.y + obj.h / 2, "innerRadius");
+        }
+        if (obj.type === "pie" || obj.type === "blockArc") {
+            const defaultAngle = obj.type === "pie" ? 180 : 270;
+            const angle = obj.angle ?? defaultAngle;
+            const [hx2, hy2] = ellipsePoint(obj.x + obj.w / 2, obj.y + obj.h / 2, obj.w / 2, obj.h / 2, -90 + angle);
+            mkAdj(hx2, hy2, "angle");
+        }
+        if (obj.type === "star" || obj.type === "starburst") {
+            const pts2 = getShapePoints(obj);
+            if (pts2 && pts2.length > 1) {
+                const [hx2, hy2] = localToScreen(obj, pts2[1]);
+                mkAdj(hx2, hy2, "innerRatio");
+            }
+        }
+        if (["rightArrow", "leftArrow", "doubleArrow"].includes(obj.type)) {
+            const headW = obj.w * (obj.headW ?? (obj.type === "doubleArrow" ? 0.2 : 0.35));
+            const hx2 = obj.type === "leftArrow" ? obj.x + headW : obj.x + obj.w - headW;
+            mkAdj(hx2, obj.y + obj.h / 2, "headW");
+        }
+        if (["upArrow", "downArrow"].includes(obj.type)) {
+            const headH = obj.h * (obj.headH ?? 0.35);
+            const hy2 = obj.type === "downArrow" ? obj.y + obj.h - headH : obj.y + headH;
+            mkAdj(obj.x + obj.w / 2, hy2, "headH");
+        }
+        if (obj.type === "chevron") {
+            const notch = obj.w * (obj.notchDepth ?? 0.35);
+            mkAdj(obj.x + obj.w - notch, obj.y, "notchDepth");
+        }
+        if (obj.type === "cross") {
+            const arm = obj.w * (obj.armW ?? 0.33);
+            mkAdj(obj.x + arm, obj.y, "armW");
+        }
+        if (obj.type === "parallelogram") {
+            const o = obj.w * (obj.slant ?? 0.25);
+            mkAdj(obj.x + o, obj.y, "slant");
+        }
+        if (obj.type === "trapezoid") {
+            const o = obj.w * (obj.topInset ?? 0.2);
+            mkAdj(obj.x + o, obj.y, "topInset");
+        }
+        if (obj.type === "pentagonArrow") {
+            const tip = obj.w * (obj.tipW ?? 0.26);
+            mkAdj(obj.x + obj.w - tip, obj.y, "tipW");
+        }
+        if (obj.type === "funnel") {
+            const stem = obj.w * (obj.stemW ?? 0.13);
+            mkAdj(obj.x + obj.w / 2 + stem, obj.y + obj.h * 0.72, "stemW");
+        }
+        if (obj.type === "snipRect") {
+            const snip = Math.min(obj.w, obj.h) * (obj.snip ?? 0.22);
+            mkAdj(obj.x + obj.w - snip, obj.y, "snip");
+        }
+        if (obj.type === "frameRect") {
+            const t = Math.min(obj.w, obj.h) * (obj.frameThick ?? 0.15);
+            mkAdj(obj.x + t, obj.y + t, "frameThick");
+        }
+        if (obj.type === "wave") {
+            const amp = obj.h * (obj.waveAmp ?? 0.15);
+            mkAdj(obj.x + obj.w * 0.75, obj.y + obj.h - amp, "waveAmp");
         }
 
         // rotate handle
@@ -2673,6 +3090,14 @@ function renderSlidesPanel() {
         num.className = "slide-num";
         num.textContent = i + 1;
         thumb.appendChild(num);
+
+        if (slide.transition && slide.transition.type && slide.transition.type !== "none") {
+            const badge = document.createElement("span");
+            badge.className = "slide-trans-badge";
+            badge.title = `Transition: ${slide.transition.type}`;
+            badge.textContent = "▶";
+            thumb.appendChild(badge);
+        }
 
         const del = document.createElement("button");
         del.className = "slide-del";
@@ -3323,6 +3748,91 @@ function renderEquation(div, text, rawTex = false) {
     }
 }
 
+// Split LaTeX source into segments: \begin{env}...\end{env} blocks vs plain text.
+function _latexSegments(src) {
+    const segs = [];
+    let pos = 0;
+    while (pos < src.length) {
+        const bi = src.indexOf('\\begin{', pos);
+        if (bi === -1) { if (src.slice(pos).trim()) segs.push({ env: null, text: src.slice(pos) }); break; }
+        if (bi > pos && src.slice(pos, bi).trim()) segs.push({ env: null, text: src.slice(pos, bi) });
+        const ne = src.indexOf('}', bi + 7);
+        if (ne === -1) { segs.push({ env: null, text: src.slice(bi) }); break; }
+        const name = src.slice(bi + 7, ne);
+        const endTag = `\\end{${name}}`;
+        const ei = src.indexOf(endTag, ne + 1);
+        if (ei === -1) { segs.push({ env: null, text: src.slice(bi) }); break; }
+        segs.push({ env: name, text: src.slice(bi, ei + endTag.length) });
+        pos = ei + endTag.length;
+    }
+    return segs;
+}
+
+// Display-only environments and their inline equivalents that work with displayMode:false.
+// Using inline equivalents avoids a Chrome/SVG-foreignObject bug where displayMode:true
+// produces garbled glyphs for table-based environments.
+const _ENV_INLINE = {
+    'align': 'aligned', 'align*': 'aligned',
+    'gather': 'gathered', 'gather*': 'gathered',
+    'equation': '', 'equation*': '',   // strip tags — content alone is fine inline
+    'multline': 'aligned', 'multline*': 'aligned',
+    'eqnarray': 'aligned', 'eqnarray*': 'aligned',
+    'alignat': 'alignedat', 'alignat*': 'alignedat',
+    'flalign': 'aligned', 'flalign*': 'aligned',
+};
+
+function renderLatexBlock(div, text) {
+    div.innerHTML = "";
+    let src = (text || "").trim();
+    if (src.startsWith("$$") && src.endsWith("$$")) src = src.slice(2, -2).trim();
+    else if (src.startsWith("\\[") && src.endsWith("\\]")) src = src.slice(2, -2).trim();
+    if (!src) return;
+
+    for (const seg of _latexSegments(src)) {
+        if (seg.env !== null) {
+            // Convert display environments to inline equivalents so everything
+            // uses displayMode:false (the proven-working path in Chrome SVG).
+            let tex = seg.text;
+            if (seg.env in _ENV_INLINE) {
+                const target = _ENV_INLINE[seg.env];
+                if (target === '') {
+                    // Strip environment tags; render raw content
+                    tex = tex.slice(`\\begin{${seg.env}}`.length, tex.length - `\\end{${seg.env}}`.length).trim();
+                } else {
+                    tex = tex.replace(`\\begin{${seg.env}}`, `\\begin{${target}}`)
+                             .replace(`\\end{${seg.env}}`, `\\end{${target}}`);
+                }
+            }
+            const row = document.createElement("div");
+            row.style.textAlign = "center";
+            div.appendChild(row);
+            try {
+                katex.render(tex, row, { throwOnError: false, displayMode: false, output: "html" });
+            } catch {
+                row.textContent = seg.text;
+            }
+        } else {
+            // Plain text: render each non-empty line as its own equation
+            for (const line of seg.text.split('\n')) {
+                let l = line.trim();
+                if (!l) continue;
+                // Strip per-line delimiters ($..$ or $$..$$)
+                if (l.startsWith("$$") && l.endsWith("$$")) l = l.slice(2, -2).trim();
+                else if (l.startsWith("$") && l.endsWith("$")) l = l.slice(1, -1).trim();
+                if (!l) continue;
+                const row = document.createElement("div");
+                row.style.textAlign = "center";
+                div.appendChild(row);
+                try {
+                    katex.render(l, row, { throwOnError: false, displayMode: false, output: "html" });
+                } catch {
+                    row.textContent = line;
+                }
+            }
+        }
+    }
+}
+
 document.getElementById("equationBtn").onclick = () => {
     pushHistory(true);
     const obj = makeObject("text", (SLIDE_W - 220) / 2, (SLIDE_H - 50) / 2, 220, 50);
@@ -3331,6 +3841,38 @@ document.getElementById("equationBtn").onclick = () => {
     obj.fontSize = 22;
     obj.align = "center";
     obj.isEquation = true;
+    curSlide().objects.push(obj);
+    state.selection = [obj.id];
+    setTool("select");
+    render(); renderProperties();
+    const div = svg.querySelector(`.text-edit-box[data-id="${obj.id}"]`);
+    if (div) enterTextEditMode(div, obj);
+};
+
+// ============ Insert tab: LaTeX Block ============
+document.getElementById("latexBlockBtn").onclick = () => {
+    pushHistory(true);
+    const obj = makeObject("text", (SLIDE_W - 320) / 2, (SLIDE_H - 120) / 2, 320, 120);
+    obj.text = "E = mc^2\nF = ma";
+    obj.isLatexBlock = true;
+    obj.fontSize = 22;
+    obj.align = "center";
+    curSlide().objects.push(obj);
+    state.selection = [obj.id];
+    setTool("select");
+    render(); renderProperties();
+    const div = svg.querySelector(`.text-edit-box[data-id="${obj.id}"]`);
+    if (div) enterTextEditMode(div, obj);
+};
+
+// ============ Insert tab: Markdown ============
+document.getElementById("markdownBtn").onclick = () => {
+    pushHistory(true);
+    const obj = makeObject("text", (SLIDE_W - 380) / 2, (SLIDE_H - 220) / 2, 380, 220);
+    obj.text = "# Heading\n\nWrite **bold**, *italic*, and `code` here.\n\n- Item one\n- Item two\n\n> A blockquote";
+    obj.isMarkdown = true;
+    obj.fontFamily = "Inter";
+    obj.fontSize = 14;
     curSlide().objects.push(obj);
     state.selection = [obj.id];
     setTool("select");
@@ -3768,6 +4310,22 @@ function plotLinspace(min, max, n) {
 const plotModal = document.getElementById("plotModal");
 const plotRenderTarget = document.getElementById("plotRenderTarget");
 
+// Plotly is not loaded at startup (it's ~3.5 MB). Load it on first use.
+let _plotlyPromise = null;
+function loadPlotly() {
+    if (typeof Plotly !== "undefined") return Promise.resolve();
+    if (!_plotlyPromise) {
+        _plotlyPromise = new Promise((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = "https://cdn.plot.ly/plotly-2.35.2.min.js";
+            s.onload = resolve;
+            s.onerror = () => { _plotlyPromise = null; reject(new Error("Failed to load Plotly")); };
+            document.head.appendChild(s);
+        });
+    }
+    return _plotlyPromise;
+}
+
 function showPlotModal() {
     plotModal.classList.add("active");
     updatePlot2dPreview();
@@ -3854,6 +4412,7 @@ function updatePlotParamPreview() {
 const PLOT_FONT = { family: "Segoe UI, Tahoma, Verdana, sans-serif", size: 12 };
 
 async function insertPlot2d() {
+    await loadPlotly();
     const expr = document.getElementById("plot2dExpr").value.trim();
     const errorEl = document.getElementById("plot2dError");
     errorEl.textContent = "";
@@ -3890,6 +4449,8 @@ async function insertPlot2d() {
     }], {
         margin: { t: 30, r: 20, b: 40, l: 50 },
         font: PLOT_FONT,
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
         xaxis: { zeroline: true, title: "x" },
         yaxis: { zeroline: true, title: "y" },
     }, { responsive: false });
@@ -3926,6 +4487,7 @@ async function insertPlot2d() {
 }
 
 async function insertPlot3d() {
+    await loadPlotly();
     const expr = document.getElementById("plot3dExpr").value.trim();
     const errorEl = document.getElementById("plot3dError");
     errorEl.textContent = "";
@@ -3966,7 +4528,9 @@ async function insertPlot3d() {
     }], {
         margin: { t: 30, r: 20, b: 20, l: 20 },
         font: PLOT_FONT,
+        paper_bgcolor: "rgba(0,0,0,0)",
         scene: {
+            bgcolor: "rgba(0,0,0,0)",
             xaxis: { title: "x" },
             yaxis: { title: "y" },
             zaxis: { title: "z" },
@@ -4013,10 +4577,13 @@ async function insertPlot3d() {
 }
 
 async function insertPlotParam() {
+    await loadPlotly();
     const xExpr = document.getElementById("plotParamX").value.trim();
     const yExpr = document.getElementById("plotParamY").value.trim();
+    const zExpr = document.getElementById("plotParamZ").value.trim();
     const errorEl = document.getElementById("plotParamError");
     errorEl.textContent = "";
+    const is3D = zExpr.length > 0;
 
     let tMin, tMax;
     try {
@@ -4030,7 +4597,7 @@ async function insertPlotParam() {
         return;
     }
 
-    let xNode, yNode;
+    let xNode, yNode, zNode;
     try {
         xNode = math.compile(xExpr);
         xNode.evaluate({ t: tMin });
@@ -4045,10 +4612,72 @@ async function insertPlotParam() {
         errorEl.textContent = `Invalid y(t) expression: ${err.message}`;
         return;
     }
+    if (is3D) {
+        try {
+            zNode = math.compile(zExpr);
+            zNode.evaluate({ t: tMin });
+        } catch (err) {
+            errorEl.textContent = `Invalid z(t) expression: ${err.message}`;
+            return;
+        }
+    }
 
     const ts = plotLinspace(tMin, tMax, 600);
     const xs = ts.map(t => { try { return xNode.evaluate({ t }); } catch { return null; } });
     const ys = ts.map(t => { try { return yNode.evaluate({ t }); } catch { return null; } });
+
+    if (is3D) {
+        const zs = ts.map(t => { try { return zNode.evaluate({ t }); } catch { return null; } });
+        await Plotly.newPlot(plotRenderTarget, [{
+            x: xs, y: ys, z: zs, type: "scatter3d", mode: "lines",
+            name: `(${xExpr}, ${yExpr}, ${zExpr})`,
+            line: { color: "#2454a0", width: 4 },
+        }], {
+            margin: { t: 30, r: 20, b: 20, l: 20 },
+            font: PLOT_FONT,
+            paper_bgcolor: "rgba(0,0,0,0)",
+            scene: {
+                bgcolor: "rgba(0,0,0,0)",
+                xaxis: { title: "x" },
+                yaxis: { title: "y" },
+                zaxis: { title: "z" },
+            },
+        }, { responsive: false });
+
+        const dataURL = await Plotly.toImage(plotRenderTarget, { format: "png", width: 700, height: 500, scale: 2 });
+
+        pushHistory(true);
+        const w = 400, h = 286;
+        const showDerivative = document.getElementById("plotParamDerivative").checked;
+        const dxTex = showDerivative ? safeMathTex(() => math.derivative(xExpr, "t").toTex()) : null;
+        const dyTex = showDerivative ? safeMathTex(() => math.derivative(yExpr, "t").toTex()) : null;
+        const dzTex = showDerivative ? safeMathTex(() => math.derivative(zExpr, "t").toTex()) : null;
+        let derivTex = null;
+        if (dxTex !== null && dyTex !== null && dzTex !== null) {
+            derivTex = `\\dfrac{dx}{dt} = ${dxTex} \\quad \\dfrac{dy}{dt} = ${dyTex} \\quad \\dfrac{dz}{dt} = ${dzTex}`;
+        }
+        const totalH = h + (derivTex ? 46 : 0);
+        const obj = makeObject("image", (SLIDE_W - w) / 2, (SLIDE_H - totalH) / 2, w, h);
+        obj.src = dataURL;
+        curSlide().objects.push(obj);
+        const newSelection = [obj.id];
+        if (derivTex) {
+            const dObj = makeObject("text", obj.x, obj.y + h + 10, w, 36);
+            dObj.text = derivTex;
+            dObj.isEquation = true;
+            dObj.rawTex = true;
+            dObj.fontFamily = "Roboto Mono";
+            dObj.fontSize = 14;
+            dObj.align = "center";
+            curSlide().objects.push(dObj);
+            newSelection.push(dObj.id);
+        }
+        state.selection = newSelection;
+        setTool("select");
+        render(); renderProperties();
+        hidePlotModal();
+        return;
+    }
 
     await Plotly.newPlot(plotRenderTarget, [{
         x: xs, y: ys, type: "scatter", mode: "lines",
@@ -4057,6 +4686,8 @@ async function insertPlotParam() {
     }], {
         margin: { t: 30, r: 20, b: 40, l: 50 },
         font: PLOT_FONT,
+        paper_bgcolor: "rgba(0,0,0,0)",
+        plot_bgcolor: "rgba(0,0,0,0)",
         xaxis: { zeroline: true, title: "x", scaleanchor: "y", scaleratio: 1 },
         yaxis: { zeroline: true, title: "y" },
     }, { responsive: false });
@@ -4961,11 +5592,65 @@ function ungroupSelection() {
 
 // ============ Copy / Paste ============
 let clipboard = null;
+// True while the system clipboard contents were written by us (this session,
+// without the user switching to another app in between). Resets on window blur
+// so that if the user copies something in PowerPoint and comes back, Ctrl+V
+// reads the external image instead of the stale internal clipboard.
+var _clipboardIsOurs = false;
+window.addEventListener("blur", () => { _clipboardIsOurs = false; });
 
 function copySelection() {
     const objs = state.selection.map(getObj).filter(Boolean);
     if (!objs.length) return;
     clipboard = objs.map(o => JSON.parse(JSON.stringify(o)));
+    _clipboardIsOurs = true;
+    _copyToSystemClipboard(objs).catch(() => {});
+}
+
+// Renders selected objects to a PNG and writes it to the system clipboard so
+// the content can be pasted into PowerPoint or any other application.
+async function _copyToSystemClipboard(objs) {
+    if (!navigator.clipboard || !window.ClipboardItem) return;
+    // Compute bounding box of selected objects
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    objs.forEach(o => {
+        minX = Math.min(minX, o.x);
+        minY = Math.min(minY, o.y);
+        maxX = Math.max(maxX, o.x + (o.w || 0));
+        maxY = Math.max(maxY, o.y + (o.h || 0));
+    });
+    const pad = 6;
+    const vx = minX - pad, vy = minY - pad;
+    const vw = Math.max(maxX - minX + pad * 2, 1);
+    const vh = Math.max(maxY - minY + pad * 2, 1);
+
+    // Build a temporary SVG containing just the selected objects
+    const tmpSvg = document.createElementNS(svgNS, "svg");
+    tmpSvg.setAttribute("xmlns", svgNS);
+    tmpSvg.setAttribute("viewBox", `${vx} ${vy} ${vw} ${vh}`);
+    tmpSvg.setAttribute("width", vw);
+    tmpSvg.setAttribute("height", vh);
+    const tmpDefs = document.createElementNS(svgNS, "defs");
+    tmpSvg.appendChild(tmpDefs);
+    objs.forEach(o => tmpSvg.appendChild(renderObject(o, tmpDefs, true, 99999)));
+    const svgStr = new XMLSerializer().serializeToString(tmpSvg);
+
+    // Draw SVG to an offscreen canvas at 2× resolution for crisp output
+    const scale = 2;
+    const canvas = document.createElement("canvas");
+    canvas.width  = Math.ceil(vw * scale);
+    canvas.height = Math.ceil(vh * scale);
+    const ctx = canvas.getContext("2d");
+    const svgBlob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(svgBlob);
+    await new Promise((res, rej) => {
+        const img = new Image();
+        img.onload = () => { ctx.scale(scale, scale); ctx.drawImage(img, 0, 0); URL.revokeObjectURL(url); res(); };
+        img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("SVG load failed")); };
+        img.src = url;
+    });
+    const pngBlob = await new Promise(res => canvas.toBlob(res, "image/png"));
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
 }
 
 function cutSelection() {
@@ -4974,7 +5659,25 @@ function cutSelection() {
     document.getElementById("deleteBtn").click();
 }
 
-function pasteClipboard() {
+async function pasteClipboard() {
+    // If the user switched to another app since the last Ctrl+C, check the
+    // system clipboard for images or text pasted from PowerPoint / elsewhere.
+    if (!_clipboardIsOurs && navigator.clipboard && navigator.clipboard.read) {
+        try {
+            const items = await navigator.clipboard.read();
+            for (const item of items) {
+                const imgType = item.types.find(t => t.startsWith("image/"));
+                if (imgType) {
+                    const blob = await item.getType(imgType);
+                    await _pasteImageBlob(blob);
+                    return;
+                }
+            }
+        } catch (_) {
+            // Permission denied or clipboard empty — fall through to internal paste
+        }
+    }
+    // Internal clipboard (within-Folium copy/paste)
     if (!clipboard || !clipboard.length) return;
     pushHistory(true);
     const newIds = [];
@@ -4987,6 +5690,36 @@ function pasteClipboard() {
     });
     state.selection = newIds;
     render(); renderProperties();
+}
+
+// Converts an image Blob from the system clipboard into a Folium image object.
+async function _pasteImageBlob(blob) {
+    return new Promise(resolve => {
+        const reader = new FileReader();
+        reader.onload = () => {
+            const dataURL = reader.result;
+            const img = new Image();
+            img.onload = () => {
+                let w = img.width, h = img.height;
+                const maxDim = Math.min(400, SLIDE_W * 0.7);
+                if (w > maxDim || h > maxDim) {
+                    const s = maxDim / Math.max(w, h);
+                    w = Math.round(w * s);
+                    h = Math.round(h * s);
+                }
+                pushHistory(true);
+                const obj = makeObject("image", (SLIDE_W - w) / 2, (SLIDE_H - h) / 2, w, h);
+                obj.src = dataURL;
+                curSlide().objects.push(obj);
+                state.selection = [obj.id];
+                setTool("select");
+                render(); renderProperties();
+                resolve();
+            };
+            img.src = dataURL;
+        };
+        reader.readAsDataURL(blob);
+    });
 }
 
 // ============ Keyboard ============
@@ -5171,7 +5904,7 @@ svg.addEventListener("mousedown", (e) => {
         } else if (handle === "vertex") {
             drag = { mode: "vertex", id: obj.id, index: parseInt(target.dataset.index, 10) };
         } else if (handle === "adjust") {
-            drag = { mode: "adjust", id: obj.id };
+            drag = { mode: "adjust", id: obj.id, adjustType: target.dataset.adjustType || "cornerRadius" };
         } else if (handle === "col-divider" || handle === "row-divider") {
             drag = {
                 mode: handle, id: obj.id, index: parseInt(target.dataset.index, 10),
@@ -5346,7 +6079,12 @@ const ALIGN_SNAP_THRESHOLD = 6;
 const MOVE_CLICK_THRESHOLD = 3;
 
 // While dragging a selection, snap its edges/center to the edges/center of other
-// objects (and the slide bounds) so dashed alignment guides can be shown.
+// objects (and the slide bounds) so alignment guides can be shown.
+// Returns { dx, dy, guides: Array<guide> } where each guide is one of:
+//   { type:"v", value, from, to }  — vertical line segment
+//   { type:"h", value, from, to }  — horizontal line segment
+//   { type:"spacing-h", left:{x1,x2,y}, right:{x1,x2,y} }  — equal-gap indicator (horizontal)
+//   { type:"spacing-v", top:{y1,y2,x}, bottom:{y1,y2,x} }  — equal-gap indicator (vertical)
 function computeAlignSnap(dx, dy, origins) {
     const movingIds = new Set(origins.map(o => o.id));
     let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
@@ -5357,54 +6095,205 @@ function computeAlignSnap(dx, dy, origins) {
         left = Math.min(left, x); right = Math.max(right, x + obj.w);
         top = Math.min(top, y); bottom = Math.max(bottom, y + obj.h);
     });
-    if (!isFinite(left)) return { dx, dy, guideV: null, guideH: null };
-    const centerX = (left + right) / 2, centerY = (top + bottom) / 2;
+    if (!isFinite(left)) return { dx, dy, guides: [] };
 
-    const vCandidates = [0, SLIDE_W, SLIDE_W / 2];
-    const hCandidates = [0, SLIDE_H, SLIDE_H / 2];
-    curSlide().objects.forEach(o => {
-        if (movingIds.has(o.id)) return;
-        vCandidates.push(o.x, o.x + o.w, o.x + o.w / 2);
-        hCandidates.push(o.y, o.y + o.h, o.y + o.h / 2);
+    const mW = right - left, mH = bottom - top;
+    const mcx = (left + right) / 2, mcy = (top + bottom) / 2;
+    const stationary = curSlide().objects.filter(o => !movingIds.has(o.id));
+
+    // Build edge/center snap candidates for each axis
+    const vCands = [0, SLIDE_W, SLIDE_W / 2];
+    const hCands = [0, SLIDE_H, SLIDE_H / 2];
+    stationary.forEach(o => {
+        vCands.push(o.x, o.x + o.w, o.x + o.w / 2);
+        hCands.push(o.y, o.y + o.h, o.y + o.h / 2);
     });
 
-    let bestVDist = ALIGN_SNAP_THRESHOLD + 1, snapDx = 0, guideV = null;
-    [left, right, centerX].forEach(edgeVal => {
-        vCandidates.forEach(c => {
-            const d = Math.abs(edgeVal - c);
-            if (d < bestVDist) { bestVDist = d; snapDx = c - edgeVal; guideV = c; }
+    // Best edge/center V snap
+    let bestVDist = ALIGN_SNAP_THRESHOLD + 1, snapDx = 0;
+    [left, right, mcx].forEach(e => {
+        vCands.forEach(c => {
+            const d = Math.abs(e - c);
+            if (d < bestVDist) { bestVDist = d; snapDx = c - e; }
         });
     });
 
-    let bestHDist = ALIGN_SNAP_THRESHOLD + 1, snapDy = 0, guideH = null;
-    [top, bottom, centerY].forEach(edgeVal => {
-        hCandidates.forEach(c => {
-            const d = Math.abs(edgeVal - c);
-            if (d < bestHDist) { bestHDist = d; snapDy = c - edgeVal; guideH = c; }
+    // Best edge/center H snap
+    let bestHDist = ALIGN_SNAP_THRESHOLD + 1, snapDy = 0;
+    [top, bottom, mcy].forEach(e => {
+        hCands.forEach(c => {
+            const d = Math.abs(e - c);
+            if (d < bestHDist) { bestHDist = d; snapDy = c - e; }
         });
     });
 
-    return {
-        dx: bestVDist <= ALIGN_SNAP_THRESHOLD ? dx + snapDx : dx,
-        dy: bestHDist <= ALIGN_SNAP_THRESHOLD ? dy + snapDy : dy,
-        guideV: bestVDist <= ALIGN_SNAP_THRESHOLD ? guideV : null,
-        guideH: bestHDist <= ALIGN_SNAP_THRESHOLD ? guideH : null,
-    };
+    // Equal-spacing snap (horizontal): if moving object fits between two stationary neighbours,
+    // snap it to the perfectly-centred equal-gap position when close enough.
+    let spacingSnapDx = null;
+    {
+        let leftObj = null, leftGap = Infinity;
+        stationary.forEach(o => { const g = (left + dx) - (o.x + o.w); if (g >= 0 && g < leftGap) { leftGap = g; leftObj = o; } });
+        let rightObj = null, rightGap = Infinity;
+        stationary.forEach(o => { const g = o.x - (right + dx); if (g >= 0 && g < rightGap) { rightGap = g; rightObj = o; } });
+        if (leftObj && rightObj) {
+            const span = rightObj.x - (leftObj.x + leftObj.w);
+            if (span > mW + 1) {
+                const eGap = (span - mW) / 2;
+                const targetLeft = leftObj.x + leftObj.w + eGap;
+                const spaceDx = targetLeft - left;
+                const spaceDist = Math.abs(spaceDx - dx);
+                if (spaceDist <= ALIGN_SNAP_THRESHOLD && spaceDist <= bestVDist)
+                    spacingSnapDx = spaceDx;
+            }
+        }
+    }
+
+    // Equal-spacing snap (vertical)
+    let spacingSnapDy = null;
+    {
+        let topObj = null, topGap = Infinity;
+        stationary.forEach(o => { const g = (top + dy) - (o.y + o.h); if (g >= 0 && g < topGap) { topGap = g; topObj = o; } });
+        let bottomObj = null, bottomGap = Infinity;
+        stationary.forEach(o => { const g = o.y - (bottom + dy); if (g >= 0 && g < bottomGap) { bottomGap = g; bottomObj = o; } });
+        if (topObj && bottomObj) {
+            const span = bottomObj.y - (topObj.y + topObj.h);
+            if (span > mH + 1) {
+                const eGap = (span - mH) / 2;
+                const targetTop = topObj.y + topObj.h + eGap;
+                const spaceDy = targetTop - top;
+                const spaceDist = Math.abs(spaceDy - dy);
+                if (spaceDist <= ALIGN_SNAP_THRESHOLD && spaceDist <= bestHDist)
+                    spacingSnapDy = spaceDy;
+            }
+        }
+    }
+
+    const finalDx = spacingSnapDx !== null ? spacingSnapDx
+                  : (bestVDist <= ALIGN_SNAP_THRESHOLD ? dx + snapDx : dx);
+    const finalDy = spacingSnapDy !== null ? spacingSnapDy
+                  : (bestHDist <= ALIGN_SNAP_THRESHOLD ? dy + snapDy : dy);
+
+    // Final bounding box after all snaps
+    const fL = left + finalDx, fR = right + finalDx;
+    const fT = top  + finalDy, fB = bottom + finalDy;
+    const fCx = (fL + fR) / 2, fCy = (fT + fB) / 2;
+
+    const GUIDE_TOL = 1.0; // tolerance for "aligned" after snap
+    const guides = [];
+
+    // Collect all V guides where a moving edge aligns with a stationary or slide edge
+    const vAligned = new Map(); // x-value → {yMin, yMax}
+    [[fL, "l"], [fR, "r"], [fCx, "c"]].forEach(([me]) => {
+        stationary.forEach(o => {
+            [o.x, o.x + o.w, o.x + o.w / 2].forEach(sv => {
+                if (Math.abs(me - sv) < GUIDE_TOL) {
+                    const key = Math.round(sv * 2) / 2;
+                    if (!vAligned.has(key)) vAligned.set(key, { yMin: Infinity, yMax: -Infinity });
+                    const e = vAligned.get(key);
+                    e.yMin = Math.min(e.yMin, o.y, fT);
+                    e.yMax = Math.max(e.yMax, o.y + o.h, fB);
+                }
+            });
+        });
+        [0, SLIDE_W, SLIDE_W / 2].forEach(sv => {
+            if (Math.abs(me - sv) < GUIDE_TOL) {
+                const key = Math.round(sv * 2) / 2;
+                if (!vAligned.has(key)) vAligned.set(key, { yMin: fT, yMax: fB });
+                else { const e = vAligned.get(key); e.yMin = Math.min(e.yMin, fT); e.yMax = Math.max(e.yMax, fB); }
+            }
+        });
+    });
+    vAligned.forEach((r, val) => guides.push({ type: "v", value: val, from: r.yMin - 14, to: r.yMax + 14 }));
+
+    // Collect all H guides
+    const hAligned = new Map();
+    [[fT, "t"], [fB, "b"], [fCy, "c"]].forEach(([me]) => {
+        stationary.forEach(o => {
+            [o.y, o.y + o.h, o.y + o.h / 2].forEach(sv => {
+                if (Math.abs(me - sv) < GUIDE_TOL) {
+                    const key = Math.round(sv * 2) / 2;
+                    if (!hAligned.has(key)) hAligned.set(key, { xMin: Infinity, xMax: -Infinity });
+                    const e = hAligned.get(key);
+                    e.xMin = Math.min(e.xMin, o.x, fL);
+                    e.xMax = Math.max(e.xMax, o.x + o.w, fR);
+                }
+            });
+        });
+        [0, SLIDE_H, SLIDE_H / 2].forEach(sv => {
+            if (Math.abs(me - sv) < GUIDE_TOL) {
+                const key = Math.round(sv * 2) / 2;
+                if (!hAligned.has(key)) hAligned.set(key, { xMin: fL, xMax: fR });
+                else { const e = hAligned.get(key); e.xMin = Math.min(e.xMin, fL); e.xMax = Math.max(e.xMax, fR); }
+            }
+        });
+    });
+    hAligned.forEach((r, val) => guides.push({ type: "h", value: val, from: r.xMin - 14, to: r.xMax + 14 }));
+
+    // Spacing guides (show equal-gap indicators at final position)
+    {
+        let leftObj = null, leftGap = Infinity;
+        stationary.forEach(o => { const g = fL - (o.x + o.w); if (g >= -GUIDE_TOL && g < leftGap) { leftGap = Math.max(g, 0); leftObj = o; } });
+        let rightObj = null, rightGap = Infinity;
+        stationary.forEach(o => { const g = o.x - fR; if (g >= -GUIDE_TOL && g < rightGap) { rightGap = Math.max(g, 0); rightObj = o; } });
+        if (leftObj && rightObj && Math.abs(leftGap - rightGap) < GUIDE_TOL) {
+            const midY = fCy;
+            guides.push({ type: "spacing-h",
+                left:  { x1: leftObj.x + leftObj.w, x2: fL, y: midY },
+                right: { x1: fR, x2: rightObj.x,    y: midY }
+            });
+        }
+    }
+    {
+        let topObj = null, topGap = Infinity;
+        stationary.forEach(o => { const g = fT - (o.y + o.h); if (g >= -GUIDE_TOL && g < topGap) { topGap = Math.max(g, 0); topObj = o; } });
+        let bottomObj = null, bottomGap = Infinity;
+        stationary.forEach(o => { const g = o.y - fB; if (g >= -GUIDE_TOL && g < bottomGap) { bottomGap = Math.max(g, 0); bottomObj = o; } });
+        if (topObj && bottomObj && Math.abs(topGap - bottomGap) < GUIDE_TOL) {
+            const midX = fCx;
+            guides.push({ type: "spacing-v",
+                top:    { y1: topObj.y + topObj.h, y2: fT, x: midX },
+                bottom: { y1: fB, y2: bottomObj.y,  x: midX }
+            });
+        }
+    }
+
+    return { dx: finalDx, dy: finalDy, guides };
 }
 
-function drawAlignmentGuides(guideV, guideH) {
-    if (guideV != null) {
-        const line = document.createElementNS(svgNS, "line");
-        applyAttrs(line, { x1: guideV, y1: -1000, x2: guideV, y2: SLIDE_H + 1000,
-            stroke: "#ff4d8d", "stroke-width": 1, "stroke-dasharray": "4,3", "pointer-events": "none", class: "align-guide" });
-        svg.appendChild(line);
-    }
-    if (guideH != null) {
-        const line = document.createElementNS(svgNS, "line");
-        applyAttrs(line, { x1: -1000, y1: guideH, x2: SLIDE_W + 1000, y2: guideH,
-            stroke: "#ff4d8d", "stroke-width": 1, "stroke-dasharray": "4,3", "pointer-events": "none", class: "align-guide" });
-        svg.appendChild(line);
-    }
+function drawAlignmentGuides(guides) {
+    if (!guides || guides.length === 0) return;
+    const COLOR = "#e8175c";
+    const addLine = (attrs) => {
+        const el = document.createElementNS(svgNS, "line");
+        applyAttrs(el, { ...attrs, stroke: COLOR, "stroke-width": 1, "pointer-events": "none", class: "align-guide" });
+        svg.appendChild(el);
+    };
+    guides.forEach(g => {
+        if (g.type === "v") {
+            addLine({ x1: g.value, y1: g.from, x2: g.value, y2: g.to });
+            // small tick marks at each end showing the extent
+            addLine({ x1: g.value - 4, y1: g.from + 14, x2: g.value + 4, y2: g.from + 14 });
+            addLine({ x1: g.value - 4, y1: g.to   - 14, x2: g.value + 4, y2: g.to   - 14 });
+        } else if (g.type === "h") {
+            addLine({ x1: g.from, y1: g.value, x2: g.to, y2: g.value });
+            addLine({ x1: g.from + 14, y1: g.value - 4, x2: g.from + 14, y2: g.value + 4 });
+            addLine({ x1: g.to   - 14, y1: g.value - 4, x2: g.to   - 14, y2: g.value + 4 });
+        } else if (g.type === "spacing-h") {
+            [g.left, g.right].forEach(seg => {
+                if (seg.x2 - seg.x1 < 1) return;
+                addLine({ x1: seg.x1, y1: seg.y, x2: seg.x2, y2: seg.y });
+                addLine({ x1: seg.x1, y1: seg.y - 5, x2: seg.x1, y2: seg.y + 5 });
+                addLine({ x1: seg.x2, y1: seg.y - 5, x2: seg.x2, y2: seg.y + 5 });
+            });
+        } else if (g.type === "spacing-v") {
+            [g.top, g.bottom].forEach(seg => {
+                if (seg.y2 - seg.y1 < 1) return;
+                addLine({ x1: seg.x, y1: seg.y1, x2: seg.x, y2: seg.y2 });
+                addLine({ x1: seg.x - 5, y1: seg.y1, x2: seg.x + 5, y2: seg.y1 });
+                addLine({ x1: seg.x - 5, y1: seg.y2, x2: seg.x + 5, y2: seg.y2 });
+            });
+        }
+    });
 }
 
 window.addEventListener("mousemove", (e) => {
@@ -5528,14 +6417,14 @@ window.addEventListener("mousemove", (e) => {
             }
         });
         render();
-        drawAlignmentGuides(snap.guideV, snap.guideH);
+        drawAlignmentGuides(snap.guides);
         return;
     }
 
     if (drag.mode === "resize") {
-        const guides = resizeObject(drag, pt);
+        const resResult = resizeObject(drag, pt);
         render();
-        drawAlignmentGuides(guides.guideV, guides.guideH);
+        drawAlignmentGuides(resResult.guides);
         const obj = getObj(drag.id);
         if (obj && (obj.type === "line" || obj.type === "arrow")) {
             const p1Handle = obj.diag ? "nw" : "sw", p2Handle = obj.diag ? "se" : "ne";
@@ -5593,8 +6482,57 @@ window.addEventListener("mousemove", (e) => {
         const obj = getObj(drag.id);
         if (obj) {
             const local = screenToLocal(obj, pt);
+            const lx = local.x - obj.x, ly = local.y - obj.y;
             const minDim = Math.min(obj.w, obj.h) || 1;
-            obj.cornerRadius = Math.max(0, Math.min(0.5, (local.x - obj.x) / minDim));
+            switch (drag.adjustType || "cornerRadius") {
+                case "cornerRadius":
+                    obj.cornerRadius = Math.max(0, Math.min(0.5, lx / minDim)); break;
+                case "innerRadius": {
+                    const cx2 = obj.x + obj.w / 2, cy2 = obj.y + obj.h / 2;
+                    const dist = Math.sqrt((local.x - cx2) ** 2 + (local.y - cy2) ** 2);
+                    const maxR = minDim / 2 * (obj.type === "gear" ? 0.97 : 1);
+                    const maxFrac = obj.type === "gear" ? 0.6 : (obj.type === "donut" ? 0.9 : obj.type === "badgeCircle" ? 0.95 : 0.88);
+                    obj.innerRadius = Math.max(0.08, Math.min(maxFrac, dist / maxR)); break;
+                }
+                case "angle": {
+                    const cx2 = obj.x + obj.w / 2, cy2 = obj.y + obj.h / 2;
+                    let deg = Math.atan2(local.y - cy2, local.x - cx2) * 180 / Math.PI + 90;
+                    if (deg <= 0) deg += 360;
+                    obj.angle = Math.max(10, Math.min(350, deg)); break;
+                }
+                case "innerRatio": {
+                    const cx2 = obj.x + obj.w / 2, cy2 = obj.y + obj.h / 2;
+                    const dist = Math.sqrt((local.x - cx2) ** 2 + (local.y - cy2) ** 2);
+                    const maxR = minDim / 2;
+                    obj.innerRatio = Math.max(0.05, Math.min(0.88, dist / maxR)); break;
+                }
+                case "headW":
+                    if (obj.type === "leftArrow") obj.headW = Math.max(0.1, Math.min(0.9, lx / obj.w));
+                    else obj.headW = Math.max(0.1, Math.min(0.9, (obj.w - lx) / obj.w));
+                    break;
+                case "headH":
+                    if (obj.type === "downArrow") obj.headH = Math.max(0.1, Math.min(0.85, (obj.h - ly) / obj.h));
+                    else obj.headH = Math.max(0.1, Math.min(0.85, ly / obj.h));
+                    break;
+                case "notchDepth":
+                    obj.notchDepth = Math.max(0.05, Math.min(0.75, (obj.w - lx) / obj.w)); break;
+                case "armW":
+                    obj.armW = Math.max(0.1, Math.min(0.45, lx / obj.w)); break;
+                case "slant":
+                    obj.slant = Math.max(0.05, Math.min(0.45, lx / obj.w)); break;
+                case "topInset":
+                    obj.topInset = Math.max(0.05, Math.min(0.45, lx / obj.w)); break;
+                case "tipW":
+                    obj.tipW = Math.max(0.05, Math.min(0.5, (obj.w - lx) / obj.w)); break;
+                case "stemW":
+                    obj.stemW = Math.max(0.04, Math.min(0.45, (lx - obj.w / 2) / obj.w)); break;
+                case "snip":
+                    obj.snip = Math.max(0.05, Math.min(0.45, (obj.w - lx) / minDim)); break;
+                case "frameThick":
+                    obj.frameThick = Math.max(0.04, Math.min(0.45, Math.min(lx, ly) / minDim)); break;
+                case "waveAmp":
+                    obj.waveAmp = Math.max(0.03, Math.min(0.45, (obj.h - ly) / obj.h)); break;
+            }
             render();
         }
         return;
@@ -5834,6 +6772,19 @@ function showTextFormatMenu(e, div) {
     };
     menu.appendChild(pasteBtn);
 
+    const rawWord = _extractLookupWord(appLanguage);
+    if (rawWord.length >= 1) {
+        const sep2 = document.createElement("div");
+        sep2.className = "text-context-menu-sep";
+        menu.appendChild(sep2);
+        const lookUpBtn = document.createElement("button");
+        lookUpBtn.textContent = "Look Up";
+        lookUpBtn.title = `Look up "${rawWord}"`;
+        lookUpBtn.onmousedown = (ev) => ev.preventDefault();
+        lookUpBtn.onclick = () => { closeTextContextMenu(); lookUpWord(rawWord); };
+        menu.appendChild(lookUpBtn);
+    }
+
     document.body.appendChild(menu);
     textContextMenu = menu;
 }
@@ -5852,7 +6803,9 @@ function showShapeContextMenu(e, hasSelection) {
         return b;
     };
 
-    const noClipboard = !clipboard || !clipboard.length;
+    // Always enable Paste — even if internal clipboard is empty, the user may
+    // have copied an image from an external application.
+    const noClipboard = false;
     if (hasSelection) {
         menu.appendChild(mkItem("Cut", cutSelection));
         menu.appendChild(mkItem("Copy", copySelection));
@@ -6029,7 +6982,7 @@ function resizeObject(drag, pt) {
     if (h < 4 && obj.type !== "line" && obj.type !== "arrow") h = 4;
 
     // Snap the edges being dragged to nearby objects' edges/centers and the slide bounds
-    let guideV = null, guideH = null;
+    let snapV = null, snapH = null;
     const vCandidates = [0, SLIDE_W, SLIDE_W / 2];
     const hCandidates = [0, SLIDE_H, SLIDE_H / 2];
     curSlide().objects.forEach(o => {
@@ -6044,19 +6997,19 @@ function resizeObject(drag, pt) {
     });
     if (drag.handle.includes("e")) {
         let best = ALIGN_SNAP_THRESHOLD + 1;
-        vCandidates.forEach(c => { const d = Math.abs((x + w) - c); if (d < best) { best = d; w = c - x; guideV = c; } });
+        vCandidates.forEach(c => { const d = Math.abs((x + w) - c); if (d < best) { best = d; w = c - x; snapV = c; } });
     }
     if (drag.handle.includes("w")) {
         let best = ALIGN_SNAP_THRESHOLD + 1;
-        vCandidates.forEach(c => { const d = Math.abs(x - c); if (d < best) { best = d; w = x + w - c; x = c; guideV = c; } });
+        vCandidates.forEach(c => { const d = Math.abs(x - c); if (d < best) { best = d; w = x + w - c; x = c; snapV = c; } });
     }
     if (drag.handle.includes("s")) {
         let best = ALIGN_SNAP_THRESHOLD + 1;
-        hCandidates.forEach(c => { const d = Math.abs((y + h) - c); if (d < best) { best = d; h = c - y; guideH = c; } });
+        hCandidates.forEach(c => { const d = Math.abs((y + h) - c); if (d < best) { best = d; h = c - y; snapH = c; } });
     }
     if (drag.handle.includes("n")) {
         let best = ALIGN_SNAP_THRESHOLD + 1;
-        hCandidates.forEach(c => { const d = Math.abs(y - c); if (d < best) { best = d; h = y + h - c; y = c; guideH = c; } });
+        hCandidates.forEach(c => { const d = Math.abs(y - c); if (d < best) { best = d; h = y + h - c; y = c; snapH = c; } });
     }
     if (w < 4) w = 4;
     if (h < 4 && obj.type !== "line" && obj.type !== "arrow") h = 4;
@@ -6094,7 +7047,30 @@ function resizeObject(drag, pt) {
     }
 
     obj.x = x; obj.y = y; obj.w = w; obj.h = h;
-    return { guideV, guideH };
+    // Build guide descriptors for drawAlignmentGuides
+    const resGuides = [];
+    if (snapV !== null) {
+        // find y-extent of all objects (including resized) that align at snapV
+        let yMin = Math.min(y, y + h), yMax = Math.max(y, y + h);
+        curSlide().objects.forEach(o => {
+            if (o.id === obj.id) return;
+            if (Math.abs(o.x - snapV) < 1 || Math.abs(o.x + o.w - snapV) < 1 || Math.abs(o.x + o.w / 2 - snapV) < 1) {
+                yMin = Math.min(yMin, o.y); yMax = Math.max(yMax, o.y + o.h);
+            }
+        });
+        resGuides.push({ type: "v", value: snapV, from: yMin - 14, to: yMax + 14 });
+    }
+    if (snapH !== null) {
+        let xMin = Math.min(x, x + w), xMax = Math.max(x, x + w);
+        curSlide().objects.forEach(o => {
+            if (o.id === obj.id) return;
+            if (Math.abs(o.y - snapH) < 1 || Math.abs(o.y + o.h - snapH) < 1 || Math.abs(o.y + o.h / 2 - snapH) < 1) {
+                xMin = Math.min(xMin, o.x); xMax = Math.max(xMax, o.x + o.w);
+            }
+        });
+        resGuides.push({ type: "h", value: snapH, from: xMin - 14, to: xMax + 14 });
+    }
+    return { guides: resGuides };
 }
 
 // ============ Dynamic text fields (Date & Time / Slide Number) ============
@@ -6171,6 +7147,19 @@ function setTextBoxContent(div, obj, slideIndex = state.current) {
         setCodeLinesHtml(div, (text || "").split("\n"), obj.codeLang);
     } else if (obj.isEquation) {
         renderEquation(div, text, obj.rawTex);
+    } else if (obj.isMarkdown) {
+        div.innerHTML = typeof marked !== "undefined"
+            ? marked.parse(text || "")
+            : `<pre style="white-space:pre-wrap">${text || ""}</pre>`;
+        div.classList.add("md-rendered");
+    } else if (obj.isLatexBlock) {
+        // KaTeX positions glyphs with precise margins; break-word/pre-wrap
+        // from the render loop's inline styles corrupt those measurements.
+        div.style.wordBreak = "normal";
+        div.style.overflowWrap = "normal";
+        div.style.whiteSpace = "normal";
+        renderLatexBlock(div, text);
+        div.classList.add("latex-block-rendered");
     } else {
         div.innerHTML = text || "";
     }
@@ -6209,8 +7198,11 @@ function getTextBoxContent(div, obj) {
             const t = block.dataset.listType || (block.tagName === "OL" ? "number" : "bullet");
             for (const li of block.children) {
                 if (li.tagName === "LI") {
-                    // Empty-line markers store a <br> for height — read back as ""
-                    lines.push(obj.isCode ? getCodeText(li) : (li.dataset.emptyLine ? "" : li.innerHTML));
+                    // Empty-line markers (data-empty-line) and Chrome's bare <br> placeholder
+                    // both read back as "" so setTextBoxContent doesn't create a phantom extra line
+                    // when it normalises <br> tags into newlines during re-render.
+                    const liHtml = li.dataset.emptyLine ? "" : li.innerHTML.replace(/^(<br\s*\/?>\s*)+$/i, "");
+                    lines.push(obj.isCode ? getCodeText(li) : liHtml);
                     types.push(t);
                     indents.push(parseInt(li.dataset.indent || "0", 10));
                 }
@@ -6229,7 +7221,20 @@ function getTextBoxContent(div, obj) {
     }
     if (obj.isCode) return getCodeLines(div).join("\n");
     if (obj.isEquation) return div.textContent;
-    return div.innerHTML;
+    if (obj.isMarkdown)    return getCodeText(div); // normalize <br>/<div> → \n
+    if (obj.isLatexBlock)  return getCodeText(div);
+    // Strip any residual spell-error spans so they are never saved into obj.text
+    const raw = div.innerHTML;
+    if (raw.includes('data-se')) {
+        const tmp = document.createElement('div');
+        tmp.innerHTML = raw;
+        tmp.querySelectorAll('[data-se]').forEach(s => {
+            while (s.firstChild) s.parentNode.insertBefore(s.firstChild, s);
+            s.parentNode.removeChild(s);
+        });
+        return tmp.innerHTML;
+    }
+    return raw;
 }
 
 // ============ Double-click to edit text ============
@@ -6259,11 +7264,28 @@ function enterTextEditMode(div, obj, skipInitialSelectAll = false, deferFocus = 
         // swap the rendered KaTeX markup for the raw source so it can be edited as text
         div.textContent = obj.text;
     }
-    // Apply spellcheck BEFORE making the element editable so the browser
-    // reads the correct state when it first activates the edit context.
-    div.setAttribute("spellcheck", spellcheckEnabled ? "true" : "false");
-    div.setAttribute("autocorrect", spellcheckEnabled ? "on" : "off");
-    div.setAttribute("autocapitalize", spellcheckEnabled ? "sentences" : "off");
+    if (obj.isMarkdown) {
+        // swap compiled HTML for raw markdown source; style as a plain-text editor
+        div.textContent = obj.text || "";
+        div.classList.remove("md-rendered");
+        div.classList.add("md-editing");
+        div.style.whiteSpace = "pre-wrap";
+    }
+    if (obj.isLatexBlock) {
+        div.textContent = obj.text || "";
+        div.classList.remove("latex-block-rendered");
+        div.classList.add("md-editing"); // reuse the same monospace source-editing style
+        div.style.whiteSpace = "pre-wrap";
+    }
+    // Remove custom spell-error spans before editing (they must not be saved in obj.text)
+    SC.removeHighlights(div);
+    {
+        const _le = LANGUAGES.find(l => l.code === appLanguage) || LANGUAGES[0];
+        div.setAttribute("spellcheck", appLanguage === "en" ? "false" : "true");
+        div.setAttribute("lang", _le.bcp);
+    }
+    div.setAttribute("autocorrect", "off");
+    div.setAttribute("autocapitalize", "off");
     div.contentEditable = "true";
     div.style.cursor = "text";
 
@@ -6373,7 +7395,7 @@ function enterTextEditMode(div, obj, skipInitialSelectAll = false, deferFocus = 
                 return;
             }
 
-            // ── Backspace at start of a list item ─────────────────────────────────
+            // ── Backspace at start of a bulleted line → remove the bullet from that line only ──
             if (ke.key === "Backspace" && inList) {
                 const sel0 = window.getSelection();
                 if (sel0 && sel0.rangeCount > 0 && sel0.getRangeAt(0).collapsed) {
@@ -6381,126 +7403,69 @@ function enterTextEditMode(div, obj, skipInitialSelectAll = false, deferFocus = 
                     let li0 = r0.startContainer;
                     while (li0 && li0 !== div) { if (li0.tagName === "LI") break; li0 = li0.parentNode; }
                     if (li0 && li0.tagName === "LI") {
-                        // Are we at the very start of this li?
-                        const testR = document.createRange();
-                        testR.selectNodeContents(li0);
-                        testR.setEnd(r0.startContainer, r0.startOffset);
-                        if (testR.toString().length === 0 && testR.cloneContents().textContent === "") {
-                            ke.preventDefault();
-                            const allLis0 = [...div.querySelectorAll("li")];
-                            const liIdx0 = allLis0.indexOf(li0);
-                            if (liIdx0 === 0) {
-                                // First item → de-list it (remove bullet, keep text)
-                                const content0 = li0.innerHTML.replace(/^<br\s*\/?>$/i, "");
-                                const listEl0 = li0.closest("ul,ol");
-                                li0.remove();
-                                if (listEl0 && !listEl0.querySelector("li")) listEl0.remove();
-                                if (!div.querySelector("li")) {
+                        const listEl0 = li0.closest("ul,ol");
+                        const liType = listEl0 ? (listEl0.dataset.listType || "bullet") : null;
+                        if (liType && liType !== "none") {
+                            // Check cursor at very start of li
+                            const testR = document.createRange();
+                            testR.selectNodeContents(li0);
+                            testR.setEnd(r0.startContainer, r0.startOffset);
+                            if (testR.toString().length === 0 && testR.cloneContents().textContent === "") {
+                                ke.preventDefault();
+
+                                // Split listEl0 around li0:
+                                //   items before li0 stay in listEl0 (or listEl0 is removed)
+                                //   li0 moves into a new "none" block
+                                //   items after li0 go into a new same-type block
+                                const siblings = [...listEl0.children].filter(c => c.tagName === "LI");
+                                const idx = siblings.indexOf(li0);
+                                const before = siblings.slice(0, idx);
+                                const after  = siblings.slice(idx + 1);
+
+                                const noneBlock = createListBlock("none");
+                                noneBlock.appendChild(li0); // li0 moves out of listEl0
+
+                                let afterBlock = null;
+                                if (after.length > 0) {
+                                    afterBlock = createListBlock(liType);
+                                    after.forEach(sib => afterBlock.appendChild(sib));
+                                }
+
+                                if (before.length === 0) {
+                                    listEl0.before(noneBlock);
+                                    if (afterBlock) noneBlock.after(afterBlock);
+                                    listEl0.remove();
+                                } else {
+                                    listEl0.after(noneBlock);
+                                    if (afterBlock) noneBlock.after(afterBlock);
+                                }
+
+                                // Cursor at start of li0 (now plain)
+                                const re = document.createRange();
+                                const fc = li0.firstChild;
+                                if (fc && fc.nodeName !== "BR") re.setStart(fc, 0);
+                                else re.setStart(li0, 0);
+                                re.collapse(true);
+                                sel0.removeAllRanges(); sel0.addRange(re);
+
+                                // If no real bullets remain → fully de-list the object
+                                if (!div.querySelector("[data-list-type]:not([data-list-type='none']) > li")) {
                                     obj.list = "none";
                                     delete obj.paragraphListTypes;
                                     delete obj.paragraphIndents;
-                                    div.innerHTML = (content0 ? content0 + (div.innerHTML ? "<br>" + div.innerHTML : "") : div.innerHTML);
-                                } else {
-                                    if (content0) {
-                                        const br0 = document.createElement("br");
-                                        div.insertBefore(br0, div.firstChild);
-                                        const tmp0 = document.createElement("span");
-                                        tmp0.innerHTML = content0;
-                                        while (tmp0.firstChild) div.insertBefore(tmp0.firstChild, br0);
-                                    }
                                 }
-                                const rr = document.createRange();
-                                rr.setStart(div.firstChild || div, 0);
-                                rr.collapse(true);
-                                sel0.removeAllRanges(); sel0.addRange(rr);
-                            } else {
-                                // Merge with previous li
-                                const prevLi = allLis0[liIdx0 - 1];
-                                const mergeContent = li0.innerHTML.replace(/^<br\s*\/?>$/i, "");
-                                const snapNode = prevLi.lastChild;
-                                if (mergeContent) {
-                                    const tmp1 = document.createElement("span");
-                                    tmp1.innerHTML = mergeContent;
-                                    while (tmp1.firstChild) prevLi.appendChild(tmp1.firstChild);
-                                }
-                                li0.remove();
-                                const rr2 = document.createRange();
-                                if (snapNode) {
-                                    if (snapNode.nodeType === Node.TEXT_NODE) rr2.setStart(snapNode, snapNode.textContent.length);
-                                    else rr2.setStartAfter(snapNode);
-                                } else { rr2.setStart(prevLi, 0); }
-                                rr2.collapse(true);
-                                sel0.removeAllRanges(); sel0.addRange(rr2);
+
+                                syncContent();
+                                return;
                             }
-                            syncContent();
-                            return;
                         }
                     }
                 }
             }
 
-            // ── Enter: always handle manually in list mode to avoid browser <div> creation ──
-            if (ke.key === "Enter" && !ke.shiftKey && !ke.ctrlKey && !ke.metaKey) {
-                if (inList) {
-                    ke.preventDefault();
-                    const sel = window.getSelection();
-                    if (!sel || sel.rangeCount === 0) return;
-                    const range = sel.getRangeAt(0);
-                    if (!range.collapsed) range.deleteContents();
-
-                    let li = range.startContainer;
-                    while (li && li !== div) { if (li.tagName === "LI") break; li = li.parentNode; }
-
-                    if (!li || li.tagName !== "LI") {
-                        // Cursor not in any <li> — shouldn't normally happen
-                        document.execCommand("insertLineBreak");
-                        syncContent();
-                        return;
-                    }
-
-                    if (!li.textContent.trim() && !li.querySelector("img")) {
-                        // Empty bullet → remove it entirely and exit the list
-                        const listEl = li.closest("ul,ol");
-                        li.remove();
-                        if (listEl && !listEl.querySelector("li")) listEl.remove();
-                        if (!div.querySelector("li")) {
-                            obj.list = "none";
-                            delete obj.paragraphListTypes;
-                            delete obj.paragraphIndents;
-                        }
-                        // Place cursor after the last remaining block
-                        const re = document.createRange();
-                        if (div.lastChild) re.setStartAfter(div.lastChild);
-                        else re.setStart(div, 0);
-                        re.collapse(true);
-                        sel.removeAllRanges(); sel.addRange(re);
-                        syncContent();
-                        return;
-                    }
-
-                    // Non-empty item → split at cursor, create new <li>
-                    const newLi = document.createElement("li");
-                    if (li.dataset.indent) { newLi.dataset.indent = li.dataset.indent; newLi.style.paddingLeft = li.style.paddingLeft; }
-                    const afterRange = document.createRange();
-                    afterRange.setStart(range.startContainer, range.startOffset);
-                    afterRange.setEnd(li, li.childNodes.length);
-                    const frag = afterRange.extractContents();
-                    if (frag.hasChildNodes()) newLi.appendChild(frag);
-                    li.after(newLi);
-
-                    const re3 = document.createRange();
-                    const fc = newLi.firstChild;
-                    if (fc && fc.nodeType === Node.TEXT_NODE) re3.setStart(fc, 0);
-                    else if (fc) re3.setStart(fc, 0);
-                    else re3.setStart(newLi, 0);
-                    re3.collapse(true);
-                    sel.removeAllRanges(); sel.addRange(re3);
-                    syncContent();
-                    return;
-                }
-                // non-list: fall through to browser default
-                return;
-            }
+            // Enter: Chrome handles it naturally — new <li> inherits the current block's type.
+            // Pressing Enter on a bullet line → new bullet. On a "none" line → new plain line.
+            // To remove a bullet, Backspace at the start of the line.
 
             return;
         }
@@ -6711,59 +7676,73 @@ function section(title, ...children) {
 
 // ============ Shape Styles preset gallery ============
 const SHAPE_STYLE_COLORS = [
-    { name: "Blue", accent: "#4472c4", light: "#dae3f3", dark: "#2e528f" },
-    { name: "Orange", accent: "#ed7d31", light: "#fbe5d6", dark: "#c55a11" },
-    { name: "Gray", accent: "#a5a5a5", light: "#ededed", dark: "#767171" },
-    { name: "Gold", accent: "#ffc000", light: "#fff2cc", dark: "#bf8f00" },
-    { name: "Green", accent: "#70ad47", light: "#e2efda", dark: "#548235" },
-    { name: "Navy", accent: "#264478", light: "#d9e2f3", dark: "#1f3864" },
+    { name: "Rose",    accent: "#f43f5e", light: "#ffe4e6", dark: "#9f1239" },
+    { name: "Violet",  accent: "#8b5cf6", light: "#ede9fe", dark: "#5b21b6" },
+    { name: "Sky",     accent: "#0ea5e9", light: "#e0f2fe", dark: "#075985" },
+    { name: "Teal",    accent: "#14b8a6", light: "#ccfbf1", dark: "#115e59" },
+    { name: "Amber",   accent: "#f59e0b", light: "#fef3c7", dark: "#92400e" },
+    { name: "Emerald", accent: "#10b981", light: "#d1fae5", dark: "#065f46" },
+    { name: "Slate",   accent: "#64748b", light: "#f1f5f9", dark: "#1e293b" },
 ];
 
 function buildShapeStylePresets() {
-    const presets = [{
-        name: "No Style",
-        apply: o => {
-            o.fill = { type: "solid", color: "#ffffff" };
-            o.stroke = { color: "#1a1a1a", width: 1, dash: "solid" };
-            o.shadow = false; o.glow = false;
-        }
-    }];
-    SHAPE_STYLE_COLORS.forEach(c => {
-        presets.push({
-            name: c.name + " Outline",
+    const presets = [
+        {
+            name: "Clean",
             apply: o => {
                 o.fill = { type: "solid", color: "#ffffff" };
-                o.stroke = { color: c.accent, width: 2.25, dash: "solid" };
-                o.shadow = false; o.glow = false;
+                o.stroke = { color: "none", width: 0, dash: "solid" };
+                o.shadow = true; o.shadowColor = "#000000"; o.shadowBlur = 12;
+                o.shadowDistance = 3; o.shadowAngle = 45; o.shadowOpacity = 16;
+                o.glow = false;
             }
-        });
-        presets.push({
-            name: c.name + " Fill",
+        },
+        {
+            name: "Carbon",
             apply: o => {
-                o.fill = { type: "solid", color: c.accent };
-                o.stroke = { color: c.dark, width: 1, dash: "solid" };
-                o.shadow = false; o.glow = false;
+                o.fill = { type: "solid", color: "#1e293b" };
+                o.stroke = { color: "none", width: 0, dash: "solid" };
+                o.shadow = true; o.shadowColor = "#000000"; o.shadowBlur = 14;
+                o.shadowDistance = 4; o.shadowAngle = 45; o.shadowOpacity = 45;
+                o.glow = false;
             }
-        });
+        },
+    ];
+    SHAPE_STYLE_COLORS.forEach(c => {
         presets.push({
-            name: c.name + " Subtle Effect",
+            name: c.name + " Subtle",
             apply: o => {
                 o.fill = { type: "solid", color: c.light };
-                o.stroke = { color: c.accent, width: 1, dash: "solid" };
-                o.shadow = true; o.shadowColor = "#000000"; o.shadowBlur = 4;
-                o.shadowDistance = 3; o.shadowAngle = 45; o.shadowOpacity = 25;
+                o.stroke = { color: c.accent, width: 1.5, dash: "solid" };
+                o.shadow = false; o.glow = false;
+            }
+        });
+        presets.push({
+            name: c.name + " Solid",
+            apply: o => {
+                o.fill = { type: "solid", color: c.accent };
+                o.stroke = { color: c.dark, width: 1.5, dash: "solid" };
+                o.shadow = false; o.glow = false;
+            }
+        });
+        presets.push({
+            name: c.name + " Gradient",
+            apply: o => {
+                o.fill = { type: "gradient", gradientType: "linear", angle: 135,
+                    stops: [{ color: c.light, pos: 0 }, { color: c.accent, pos: 100 }] };
+                o.stroke = { color: "none", width: 0, dash: "solid" };
+                o.shadow = true; o.shadowColor = c.dark; o.shadowBlur = 10;
+                o.shadowDistance = 3; o.shadowAngle = 45; o.shadowOpacity = 28;
                 o.glow = false;
             }
         });
         presets.push({
-            name: c.name + " Intense Effect",
+            name: c.name + " Deep",
             apply: o => {
-                o.fill = { type: "gradient", gradientType: "linear", angle: 90,
-                    stops: [{ color: c.light, pos: 0 }, { color: c.accent, pos: 100 }] };
-                o.stroke = { color: c.dark, width: 1, dash: "solid" };
-                o.shadow = true; o.shadowColor = "#000000"; o.shadowBlur = 8;
-                o.shadowDistance = 5; o.shadowAngle = 45; o.shadowOpacity = 35;
-                o.glow = false;
+                o.fill = { type: "solid", color: c.dark };
+                o.stroke = { color: "none", width: 0, dash: "solid" };
+                o.shadow = false;
+                o.glow = true; o.glowColor = c.accent; o.glowSize = 9; o.glowOpacity = 65;
             }
         });
     });
@@ -6775,26 +7754,21 @@ function buildShapeStylesSection(obj, multi) {
     const targets = multi || [obj];
     const grid = el("div", { class: "style-swatch-grid" });
     SHAPE_STYLE_PRESETS.forEach(preset => {
+        const wrap = el("div", { class: "style-swatch-wrap" });
         const swatch = el("button", { class: "style-swatch", title: preset.name });
         const preview = JSON.parse(JSON.stringify(obj));
         preset.apply(preview);
-        const fill = preview.fill;
-        if (fill.type === "gradient") {
-            const stops = fill.stops.map(s => `${s.color} ${s.pos}%`).join(", ");
-            swatch.style.background = `linear-gradient(135deg, ${stops})`;
-        } else {
-            swatch.style.background = fill.color === "none" ? "#ffffff" : fill.color;
-        }
-        swatch.style.borderColor = preview.stroke.color === "none" ? "#d6dbe1" : preview.stroke.color;
-        swatch.style.borderWidth = Math.min(preview.stroke.width || 1, 4) + "px";
-        if (preview.shadow) swatch.style.boxShadow = "2px 2px 4px rgba(0,0,0,0.3)";
+        _applySwatchStyle(swatch, preview);
         swatch.onclick = () => {
             pushHistory(true);
             applyToAll(targets, o => preset.apply(o));
             render();
             renderProperties();
         };
-        grid.appendChild(swatch);
+        const lbl = el("span", { class: "style-swatch-lbl", text: preset.name.replace(/^(Rose|Violet|Sky|Teal|Amber|Emerald|Slate) /, "") });
+        wrap.appendChild(swatch);
+        wrap.appendChild(lbl);
+        grid.appendChild(wrap);
     });
     return section("Shape Styles", grid);
 }
@@ -6816,6 +7790,8 @@ function renderProperties() {
             text: "Select an object to edit its properties, or pick a tool above and draw on the canvas." }));
         panel.appendChild(empty);
         panel.appendChild(buildSlideBackgroundSection());
+        updateAnimationsRibbon();
+        renderAnimPane();
         return;
     }
 
@@ -6846,6 +7822,8 @@ function renderProperties() {
         }
         panel.appendChild(buildEffectsSection(objs[0], objs));
     }
+    updateAnimationsRibbon();
+    renderAnimPane();
 }
 
 function buildEffectsSection(obj, multi) {
@@ -6858,6 +7836,18 @@ function buildEffectsSection(obj, multi) {
         applyToAll(targets, o => o.opacity = v);
     };
     opacityInput.onchange = () => pushHistory(true);
+
+    const softEdgeInput = el("input", { type: "checkbox" });
+    softEdgeInput.checked = targets.every(o => o.softEdge);
+    softEdgeInput.onchange = () => { pushHistory(true); applyToAll(targets, o => o.softEdge = softEdgeInput.checked); };
+
+    const softEdgeSizeInput = el("input", { type: "range", min: 1, max: 50, value: obj.softEdgeSize ?? 10 });
+    const softEdgeSizeVal = el("span", { class: "small", text: String(obj.softEdgeSize ?? 10) });
+    softEdgeSizeInput.oninput = () => {
+        softEdgeSizeVal.textContent = softEdgeSizeInput.value;
+        applyToAll(targets, o => o.softEdgeSize = parseInt(softEdgeSizeInput.value));
+    };
+    softEdgeSizeInput.onchange = () => pushHistory(true);
 
     const shadowInput = el("input", { type: "checkbox" });
     shadowInput.checked = targets.every(o => o.shadow);
@@ -6903,6 +7893,44 @@ function buildEffectsSection(obj, multi) {
         pushHistory(true);
         applyToAll(targets, o => o.shadowPerspective = shadowPerspectiveInput.checked);
     };
+
+    const innerShadowInput = el("input", { type: "checkbox" });
+    innerShadowInput.checked = targets.every(o => o.innerShadow);
+    innerShadowInput.onchange = () => { pushHistory(true); applyToAll(targets, o => o.innerShadow = innerShadowInput.checked); };
+
+    const innerShadowColorInput = makeColorPickerBtn(obj.innerShadowColor || "#000000", c => applyToAll(targets, o => o.innerShadowColor = c), { onCommit: () => pushHistory(true) });
+
+    const innerShadowBlurInput = el("input", { type: "range", min: 0, max: 20, value: obj.innerShadowBlur ?? 4 });
+    const innerShadowBlurVal = el("span", { class: "small", text: String(obj.innerShadowBlur ?? 4) });
+    innerShadowBlurInput.oninput = () => {
+        innerShadowBlurVal.textContent = innerShadowBlurInput.value;
+        applyToAll(targets, o => o.innerShadowBlur = parseInt(innerShadowBlurInput.value));
+    };
+    innerShadowBlurInput.onchange = () => pushHistory(true);
+
+    const innerShadowDistInput = el("input", { type: "range", min: 0, max: 30, value: obj.innerShadowDistance ?? 4 });
+    const innerShadowDistVal = el("span", { class: "small", text: String(obj.innerShadowDistance ?? 4) });
+    innerShadowDistInput.oninput = () => {
+        innerShadowDistVal.textContent = innerShadowDistInput.value;
+        applyToAll(targets, o => o.innerShadowDistance = parseInt(innerShadowDistInput.value));
+    };
+    innerShadowDistInput.onchange = () => pushHistory(true);
+
+    const innerShadowAngleInput = el("input", { type: "range", min: 0, max: 359, value: obj.innerShadowAngle ?? 135 });
+    const innerShadowAngleVal = el("span", { class: "small", text: (obj.innerShadowAngle ?? 135) + "°" });
+    innerShadowAngleInput.oninput = () => {
+        innerShadowAngleVal.textContent = innerShadowAngleInput.value + "°";
+        applyToAll(targets, o => o.innerShadowAngle = parseInt(innerShadowAngleInput.value));
+    };
+    innerShadowAngleInput.onchange = () => pushHistory(true);
+
+    const innerShadowOpacityInput = el("input", { type: "range", min: 0, max: 100, value: obj.innerShadowOpacity ?? 50 });
+    const innerShadowOpacityVal = el("span", { class: "small", text: (obj.innerShadowOpacity ?? 50) + "%" });
+    innerShadowOpacityInput.oninput = () => {
+        innerShadowOpacityVal.textContent = innerShadowOpacityInput.value + "%";
+        applyToAll(targets, o => o.innerShadowOpacity = parseInt(innerShadowOpacityInput.value));
+    };
+    innerShadowOpacityInput.onchange = () => pushHistory(true);
 
     const glowInput = el("input", { type: "checkbox" });
     glowInput.checked = targets.every(o => o.glow);
@@ -6950,6 +7978,8 @@ function buildEffectsSection(obj, multi) {
 
     return section("Effects",
         row("Opacity", opacityInput, opacityVal),
+        row("Soft Edges", softEdgeInput),
+        row("Soft Edge Size", softEdgeSizeInput, softEdgeSizeVal),
         row("Shadow", shadowInput),
         row("Shadow Color", shadowColorInput),
         row("Shadow Blur", shadowBlurInput, shadowBlurVal),
@@ -6957,6 +7987,12 @@ function buildEffectsSection(obj, multi) {
         row("Shadow Direction", shadowAngleInput, shadowAngleVal),
         row("Shadow Opacity", shadowOpacityInput, shadowOpacityVal),
         row("Perspective", shadowPerspectiveInput),
+        row("Inner Shadow", innerShadowInput),
+        row("Inner Shadow Color", innerShadowColorInput),
+        row("Inner Shadow Blur", innerShadowBlurInput, innerShadowBlurVal),
+        row("Inner Shadow Dist", innerShadowDistInput, innerShadowDistVal),
+        row("Inner Shadow Dir", innerShadowAngleInput, innerShadowAngleVal),
+        row("Inner Shadow Opacity", innerShadowOpacityInput, innerShadowOpacityVal),
         row("Glow", glowInput, glowColorInput),
         row("Glow Size", glowSizeInput, glowSizeVal),
         row("Glow Opacity", glowOpacityInput, glowOpacityVal),
@@ -7055,6 +8091,37 @@ function buildFontSection(obj) {
             row("Expression", textArea),
             row("Preview", preview),
             row("Font", familySelect),
+            row("Size", sizeInput, el("span", { text: "px" })),
+            row("Color", colorInput)
+        );
+    }
+
+    if (obj.isMarkdown) {
+        textArea.rows = 7;
+        textArea.style.fontFamily = "monospace";
+        textArea.style.fontSize   = "12px";
+        textArea.placeholder = "# Heading\n\nWrite **bold**, *italic*, `code`\n\n- list item\n\n> blockquote";
+        textArea.oninput = () => { obj.text = textArea.value; obj.field = null; render(); };
+        return section("Markdown",
+            row("Source", textArea),
+            row("Font", familySelect),
+            row("Size", sizeInput, el("span", { text: "px" })),
+            row("Color", colorInput)
+        );
+    }
+
+    if (obj.isLatexBlock) {
+        textArea.rows = 6;
+        textArea.style.fontFamily = "monospace";
+        textArea.style.fontSize   = "12px";
+        textArea.placeholder = "\\begin{align}\n  a &= b + c \\\\\\\\\n  d &= e - f\n\\end{align}";
+        const preview = el("div", { class: "equation-preview", style: "text-align:center" });
+        const updatePreview = () => renderLatexBlock(preview, textArea.value);
+        textArea.oninput = () => { obj.text = textArea.value; obj.field = null; updatePreview(); render(); };
+        updatePreview();
+        return section("LaTeX Block",
+            row("Source", textArea),
+            row("Preview", preview),
             row("Size", sizeInput, el("span", { text: "px" })),
             row("Color", colorInput)
         );
@@ -7465,24 +8532,39 @@ function _buildCpPopup(anchor, curColor, onSelect, { allowNone = false } = {}) {
     return popup;
 }
 
-function _lerpGradColor(stops, pos) {
-    if (!stops || stops.length === 0) return "#ffffff";
+// Convert a hex color + opacity (0-100) to a CSS rgba() string
+function hexToRgba(hex, opacity) {
+    const n = parseInt((hex || "#000").replace(/^#/, "").padStart(6, "0"), 16);
+    const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+    return `rgba(${r},${g},${b},${((opacity ?? 100) / 100).toFixed(3)})`;
+}
+
+// Checkerboard CSS background for showing transparency (used behind gradient tracks)
+const GRAD_CHECKER = "conic-gradient(#c0c0c0 90deg,#fff 90deg 180deg,#c0c0c0 180deg 270deg,#fff 270deg) 0 0/10px 10px";
+
+// Interpolate both color and opacity across gradient stops at a given position (0-100)
+function _lerpGradStop(stops, pos) {
+    if (!stops || stops.length === 0) return { color: "#ffffff", opacity: 100 };
     const sorted = [...stops].sort((a, b) => a.pos - b.pos);
-    if (pos <= sorted[0].pos) return sorted[0].color;
-    if (pos >= sorted[sorted.length - 1].pos) return sorted[sorted.length - 1].color;
+    if (pos <= sorted[0].pos) return { color: sorted[0].color, opacity: sorted[0].opacity ?? 100 };
+    if (pos >= sorted[sorted.length - 1].pos) return { color: sorted[sorted.length - 1].color, opacity: sorted[sorted.length - 1].opacity ?? 100 };
     let lo = sorted[0], hi = sorted[sorted.length - 1];
     for (let i = 0; i < sorted.length - 1; i++) {
         if (sorted[i].pos <= pos && sorted[i + 1].pos >= pos) { lo = sorted[i]; hi = sorted[i + 1]; break; }
     }
     const t = (pos - lo.pos) / (hi.pos - lo.pos || 1);
-    const c1 = parseInt(lo.color.replace(/^#/, "").padStart(6, "0"), 16);
-    const c2 = parseInt(hi.color.replace(/^#/, "").padStart(6, "0"), 16);
+    const c1 = parseInt((lo.color || "#000").replace(/^#/, "").padStart(6, "0"), 16);
+    const c2 = parseInt((hi.color || "#000").replace(/^#/, "").padStart(6, "0"), 16);
     const lc = (a, b) => Math.round(a + (b - a) * t);
     const r = lc((c1 >> 16) & 0xff, (c2 >> 16) & 0xff);
     const g = lc((c1 >> 8) & 0xff, (c2 >> 8) & 0xff);
     const b = lc(c1 & 0xff, c2 & 0xff);
-    return `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+    const color = `#${r.toString(16).padStart(2, "0")}${g.toString(16).padStart(2, "0")}${b.toString(16).padStart(2, "0")}`;
+    const opacity = Math.round((lo.opacity ?? 100) + ((hi.opacity ?? 100) - (lo.opacity ?? 100)) * t);
+    return { color, opacity };
 }
+
+function _lerpGradColor(stops, pos) { return _lerpGradStop(stops, pos).color; }
 
 // ============ Gradient memory ============
 let _lastGradientFill = null;
@@ -7537,12 +8619,13 @@ function buildFillSection(obj, multi, refresh) {
             const stops = fill.stops || [];
             const sorted = [...stops].sort((a, b) => a.pos - b.pos);
             const track = el("div", { class: "grad-bar-track" });
-            track.style.background = `linear-gradient(to right, ${sorted.map(s => `${s.color} ${s.pos}%`).join(", ")})`;
+            const gradCss = sorted.map(s => `${hexToRgba(s.color, s.opacity ?? 100)} ${s.pos}%`).join(", ");
+            track.style.background = `linear-gradient(to right, ${gradCss}), ${GRAD_CHECKER}`;
             stops.forEach((stop, i) => {
                 const handle = el("div", { class: "grad-stop-handle" + (i === selFillStop ? " selected" : "") });
                 handle.style.left = stop.pos + "%";
-                handle.style.background = stop.color;
-                handle.title = `${stop.color}  ${stop.pos}%\nRight-click to delete`;
+                handle.style.background = `${hexToRgba(stop.color, stop.opacity ?? 100)}, ${GRAD_CHECKER}`;
+                handle.title = `${stop.color}  pos:${stop.pos}%  opacity:${stop.opacity ?? 100}%\nRight-click to delete`;
                 handle.addEventListener("mousedown", mde => {
                     mde.preventDefault(); mde.stopPropagation();
                     selFillStop = i;
@@ -7569,8 +8652,8 @@ function buildFillSection(obj, multi, refresh) {
                 e.stopPropagation();
                 const rect = track.getBoundingClientRect();
                 const pos = Math.max(0, Math.min(100, Math.round((e.clientX - rect.left) / rect.width * 100)));
-                const c = _lerpGradColor(stops, pos);
-                applyToAll(targets, o => o.fill.stops.push({ color: c, pos }));
+                const ns = _lerpGradStop(stops, pos);
+                applyToAll(targets, o => o.fill.stops.push({ color: ns.color, opacity: ns.opacity, pos }));
                 selFillStop = fill.stops.length - 1;
                 saveFillGrad(); buildFillBar();
             });
@@ -7582,7 +8665,11 @@ function buildFillSection(obj, multi, refresh) {
                 const cp = makeColorPickerBtn(s.color, c => { applyToAll(targets, o => { if (o.fill.stops[si]) o.fill.stops[si].color = c; }); saveFillGrad(); buildFillBar(); });
                 const pi = el("input", { type: "number", min: 0, max: 100, value: s.pos, class: "small" });
                 pi.onchange = () => { const p = Math.max(0, Math.min(100, parseInt(pi.value) || 0)); applyToAll(targets, o => { if (o.fill.stops[si]) o.fill.stops[si].pos = p; }); pi.value = p; saveFillGrad(); buildFillBar(); };
-                edRow.append(cp, pi, el("span", { text: "%", class: "small" }));
+                const opVal = s.opacity ?? 100;
+                const opSlider = el("input", { type: "range", min: 0, max: 100, value: opVal, class: "grad-opacity-slider" });
+                const opLabel = el("span", { text: opVal + "%", class: "small grad-opacity-label" });
+                opSlider.oninput = () => { const op = parseInt(opSlider.value); applyToAll(targets, o => { if (o.fill.stops[si]) o.fill.stops[si].opacity = op; }); opLabel.textContent = op + "%"; saveFillGrad(); buildFillBar(); };
+                edRow.append(cp, pi, el("span", { text: "%", class: "small" }), opSlider, opLabel);
                 if (stops.length > 2) { const db = el("button", { text: "✕" }); db.onclick = () => { applyToAll(targets, o => { if (o.fill.stops.length > 2) o.fill.stops.splice(si, 1); }); if (selFillStop >= fill.stops.length) selFillStop = fill.stops.length - 1; saveFillGrad(); buildFillBar(); }; edRow.appendChild(db); }
                 fillBarWrap.appendChild(edRow);
             }
@@ -7661,12 +8748,13 @@ function buildStrokeSection(obj, multi, refresh) {
             const stops = stroke.stops || [];
             const sorted = [...stops].sort((a, b) => a.pos - b.pos);
             const track = el("div", { class: "grad-bar-track" });
-            track.style.background = `linear-gradient(to right, ${sorted.map(s => `${s.color} ${s.pos}%`).join(", ")})`;
+            const gradCss = sorted.map(s => `${hexToRgba(s.color, s.opacity ?? 100)} ${s.pos}%`).join(", ");
+            track.style.background = `linear-gradient(to right, ${gradCss}), ${GRAD_CHECKER}`;
             stops.forEach((stop, i) => {
                 const handle = el("div", { class: "grad-stop-handle" + (i === selStrkStop ? " selected" : "") });
                 handle.style.left = stop.pos + "%";
-                handle.style.background = stop.color;
-                handle.title = `${stop.color}  ${stop.pos}%\nRight-click to delete`;
+                handle.style.background = `${hexToRgba(stop.color, stop.opacity ?? 100)}, ${GRAD_CHECKER}`;
+                handle.title = `${stop.color}  pos:${stop.pos}%  opacity:${stop.opacity ?? 100}%\nRight-click to delete`;
                 handle.addEventListener("mousedown", mde => {
                     mde.preventDefault(); mde.stopPropagation();
                     selStrkStop = i;
@@ -7688,8 +8776,8 @@ function buildStrokeSection(obj, multi, refresh) {
                 e.stopPropagation();
                 const rect = track.getBoundingClientRect();
                 const pos = Math.max(0, Math.min(100, Math.round((e.clientX - rect.left) / rect.width * 100)));
-                const c = _lerpGradColor(stops, pos);
-                applyToAll(targets, o => o.stroke.stops.push({ color: c, pos }));
+                const ns = _lerpGradStop(stops, pos);
+                applyToAll(targets, o => o.stroke.stops.push({ color: ns.color, opacity: ns.opacity, pos }));
                 selStrkStop = stroke.stops.length - 1;
                 buildStrkBar();
             });
@@ -7701,7 +8789,11 @@ function buildStrokeSection(obj, multi, refresh) {
                 const cp = makeColorPickerBtn(s.color, c => { applyToAll(targets, o => { if (o.stroke.stops[si]) o.stroke.stops[si].color = c; }); buildStrkBar(); });
                 const pi = el("input", { type: "number", min: 0, max: 100, value: s.pos, class: "small" });
                 pi.onchange = () => { const p = Math.max(0, Math.min(100, parseInt(pi.value) || 0)); applyToAll(targets, o => { if (o.stroke.stops[si]) o.stroke.stops[si].pos = p; }); pi.value = p; buildStrkBar(); };
-                edRow.append(cp, pi, el("span", { text: "%", class: "small" }));
+                const opVal = s.opacity ?? 100;
+                const opSlider = el("input", { type: "range", min: 0, max: 100, value: opVal, class: "grad-opacity-slider" });
+                const opLabel = el("span", { text: opVal + "%", class: "small grad-opacity-label" });
+                opSlider.oninput = () => { const op = parseInt(opSlider.value); applyToAll(targets, o => { if (o.stroke.stops[si]) o.stroke.stops[si].opacity = op; }); opLabel.textContent = op + "%"; buildStrkBar(); };
+                edRow.append(cp, pi, el("span", { text: "%", class: "small" }), opSlider, opLabel);
                 if (stops.length > 2) { const db = el("button", { text: "✕" }); db.onclick = () => { applyToAll(targets, o => { if (o.stroke.stops.length > 2) o.stroke.stops.splice(si, 1); }); if (selStrkStop >= stroke.stops.length) selStrkStop = stroke.stops.length - 1; buildStrkBar(); }; edRow.appendChild(db); }
                 strkBarWrap.appendChild(edRow);
             }
@@ -7834,7 +8926,7 @@ function updateShapeRibbonControls(targets) {
     if (swatch) {
         const f = obj.fill || { type: "solid", color: "#a4c2e0" };
         if (f.type === "gradient" && f.stops && f.stops.length >= 2) {
-            swatch.style.background = `linear-gradient(90deg,${f.stops[0].color},${f.stops[f.stops.length-1].color})`;
+            swatch.style.background = `linear-gradient(90deg,${hexToRgba(f.stops[0].color, f.stops[0].opacity ?? 100)},${hexToRgba(f.stops[f.stops.length-1].color, f.stops[f.stops.length-1].opacity ?? 100)}), ${GRAD_CHECKER}`;
         } else {
             swatch.style.background = (f.color === "none") ? "repeating-linear-gradient(45deg,#ccc 0,#ccc 3px,#fff 3px,#fff 6px)" : (f.color || "#a4c2e0");
         }
@@ -7860,6 +8952,10 @@ function syncShapeRibbonMenus() {
     if (!targets.length) return;
     const obj = targets[0];
 
+    // Soft Edges
+    document.getElementById("sfSoftEdgeEnable").checked = !!obj.softEdge;
+    const sfSE = document.getElementById("sfSoftEdgeSize"); sfSE.value = obj.softEdgeSize ?? 10; document.getElementById("sfSoftEdgeSizeVal").textContent = sfSE.value;
+
     // Shadow
     document.getElementById("sfShadowEnable").checked = !!obj.shadow;
     document.getElementById("sfShadowColor").value = obj.shadowColor || "#000000";
@@ -7867,6 +8963,14 @@ function syncShapeRibbonMenus() {
     const sfShadowDist = document.getElementById("sfShadowDist"); sfShadowDist.value = obj.shadowDistance ?? 4; document.getElementById("sfShadowDistVal").textContent = sfShadowDist.value;
     const sfShadowAngle = document.getElementById("sfShadowAngle"); sfShadowAngle.value = obj.shadowAngle ?? 45; document.getElementById("sfShadowAngleVal").textContent = sfShadowAngle.value + "°";
     const sfShadowOpacity = document.getElementById("sfShadowOpacity"); sfShadowOpacity.value = obj.shadowOpacity ?? 40; document.getElementById("sfShadowOpacityVal").textContent = sfShadowOpacity.value + "%";
+
+    // Inner Shadow
+    document.getElementById("sfInnerShadowEnable").checked = !!obj.innerShadow;
+    document.getElementById("sfInnerShadowColor").value = obj.innerShadowColor || "#000000";
+    const sfISBlur = document.getElementById("sfInnerShadowBlur"); sfISBlur.value = obj.innerShadowBlur ?? 4; document.getElementById("sfInnerShadowBlurVal").textContent = sfISBlur.value;
+    const sfISDist = document.getElementById("sfInnerShadowDist"); sfISDist.value = obj.innerShadowDistance ?? 4; document.getElementById("sfInnerShadowDistVal").textContent = sfISDist.value;
+    const sfISAngle = document.getElementById("sfInnerShadowAngle"); sfISAngle.value = obj.innerShadowAngle ?? 135; document.getElementById("sfInnerShadowAngleVal").textContent = sfISAngle.value + "°";
+    const sfISOpacity = document.getElementById("sfInnerShadowOpacity"); sfISOpacity.value = obj.innerShadowOpacity ?? 50; document.getElementById("sfInnerShadowOpacityVal").textContent = sfISOpacity.value + "%";
 
     // Glow
     document.getElementById("sfGlowEnable").checked = !!obj.glow;
@@ -7946,6 +9050,44 @@ document.getElementById("sfShadowColor").onchange = () => pushHistory(true);
     el2.onchange = () => pushHistory(true);
 });
 
+// Soft Edge controls
+document.getElementById("sfSoftEdgeEnable").onchange = () => {
+    const targets = shapeStyleTargets(); if (!targets.length) return;
+    pushHistory(true); applyToAll(targets, o => o.softEdge = document.getElementById("sfSoftEdgeEnable").checked); render(); updateShapeRibbonControls(targets);
+};
+document.getElementById("sfSoftEdgeSize").oninput = () => {
+    const v = parseInt(document.getElementById("sfSoftEdgeSize").value);
+    document.getElementById("sfSoftEdgeSizeVal").textContent = v;
+    const t = shapeStyleTargets(); if (!t.length) return;
+    applyToAll(t, o => o.softEdgeSize = v); render();
+};
+document.getElementById("sfSoftEdgeSize").onchange = () => pushHistory(true);
+
+// Inner Shadow controls
+document.getElementById("sfInnerShadowEnable").onchange = () => {
+    const targets = shapeStyleTargets(); if (!targets.length) return;
+    const v = document.getElementById("sfInnerShadowEnable").checked;
+    pushHistory(true); applyToAll(targets, o => o.innerShadow = v); render(); updateShapeRibbonControls(targets);
+};
+document.getElementById("sfInnerShadowColor").oninput = () => {
+    const targets = shapeStyleTargets(); if (!targets.length) return;
+    applyToAll(targets, o => o.innerShadowColor = document.getElementById("sfInnerShadowColor").value); render();
+};
+document.getElementById("sfInnerShadowColor").onchange = () => pushHistory(true);
+["sfInnerShadowBlur","sfInnerShadowDist","sfInnerShadowAngle","sfInnerShadowOpacity"].forEach(id => {
+    const el2 = document.getElementById(id);
+    const valId = id + "Val";
+    const suffix = id === "sfInnerShadowAngle" ? "°" : (id === "sfInnerShadowOpacity" ? "%" : "");
+    const prop = { sfInnerShadowBlur: "innerShadowBlur", sfInnerShadowDist: "innerShadowDistance", sfInnerShadowAngle: "innerShadowAngle", sfInnerShadowOpacity: "innerShadowOpacity" }[id];
+    el2.oninput = () => {
+        const v = parseInt(el2.value);
+        document.getElementById(valId).textContent = v + suffix;
+        const t = shapeStyleTargets(); if (!t.length) return;
+        applyToAll(t, o => o[prop] = v); render();
+    };
+    el2.onchange = () => pushHistory(true);
+});
+
 // Glow controls
 document.getElementById("sfGlowEnable").onchange = () => {
     const targets = shapeStyleTargets(); if (!targets.length) return;
@@ -8007,6 +9149,27 @@ editPointsBtn.onclick = () => {
     editPointsBtn.classList.toggle("active", !!state.editPoints);
 };
 
+function _applySwatchStyle(swatch, preview) {
+    const fill = preview.fill;
+    if (fill.type === "gradient") {
+        const stops = fill.stops.map(s => `${hexToRgba(s.color, s.opacity ?? 100)} ${s.pos}%`).join(", ");
+        swatch.style.background = `linear-gradient(135deg, ${stops})`;
+    } else {
+        swatch.style.background = (fill.color === "none" || !fill.color) ? "#ffffff" : fill.color;
+    }
+    const noStroke = !preview.stroke.color || preview.stroke.color === "none";
+    swatch.style.borderColor = noStroke ? "rgba(0,0,0,0.10)" : preview.stroke.color;
+    swatch.style.borderWidth = noStroke ? "1px" : Math.min(preview.stroke.width || 1, 3) + "px";
+    if (preview.glow && preview.glowColor) {
+        const a = ((preview.glowOpacity ?? 65) / 100).toFixed(2);
+        swatch.style.boxShadow = `0 0 7px 2px ${hexToRgba(preview.glowColor, preview.glowOpacity ?? 65)}`;
+    } else if (preview.shadow) {
+        swatch.style.boxShadow = "2px 2px 5px rgba(0,0,0,0.26)";
+    } else {
+        swatch.style.boxShadow = "";
+    }
+}
+
 function renderShapeStylesRibbonGallery(targets) {
     shapeStylesRibbonGallery.innerHTML = "";
     const obj = targets[0];
@@ -8014,16 +9177,7 @@ function renderShapeStylesRibbonGallery(targets) {
         const swatch = el("button", { class: "style-swatch ribbon-swatch", title: preset.name });
         const preview = JSON.parse(JSON.stringify(obj));
         preset.apply(preview);
-        const fill = preview.fill;
-        if (fill.type === "gradient") {
-            const stops = fill.stops.map(s => `${s.color} ${s.pos}%`).join(", ");
-            swatch.style.background = `linear-gradient(135deg, ${stops})`;
-        } else {
-            swatch.style.background = fill.color === "none" ? "#ffffff" : fill.color;
-        }
-        swatch.style.borderColor = preview.stroke.color === "none" ? "#d6dbe1" : preview.stroke.color;
-        swatch.style.borderWidth = Math.min(preview.stroke.width || 1, 4) + "px";
-        if (preview.shadow) swatch.style.boxShadow = "2px 2px 4px rgba(0,0,0,0.3)";
+        _applySwatchStyle(swatch, preview);
         swatch.onclick = () => {
             pushHistory(true);
             applyToAll(targets, o => preset.apply(o));
@@ -8258,6 +9412,15 @@ function updateFormatPictureTab() {
     document.getElementById("picShadowBlurVal").textContent = obj.shadowBlur ?? 8;
     document.getElementById("picShadowDist").value = obj.shadowDistance ?? 4;
     document.getElementById("picShadowDistVal").textContent = obj.shadowDistance ?? 4;
+    document.getElementById("picSoftEdgeEnable").checked = !!obj.softEdge;
+    document.getElementById("picSoftEdgeSize").value = obj.softEdgeSize ?? 10;
+    document.getElementById("picSoftEdgeSizeVal").textContent = obj.softEdgeSize ?? 10;
+    document.getElementById("picInnerShadowEnable").checked = !!obj.innerShadow;
+    document.getElementById("picInnerShadowColor").value = obj.innerShadowColor || "#000000";
+    document.getElementById("picInnerShadowBlur").value = obj.innerShadowBlur ?? 4;
+    document.getElementById("picInnerShadowBlurVal").textContent = obj.innerShadowBlur ?? 4;
+    document.getElementById("picInnerShadowDist").value = obj.innerShadowDistance ?? 4;
+    document.getElementById("picInnerShadowDistVal").textContent = obj.innerShadowDistance ?? 4;
     document.getElementById("picGlowEnable").checked = !!obj.glow;
     document.getElementById("picGlowColor").value = obj.glowColor || "#65c8d6";
     document.getElementById("picGlowSize").value = obj.glowSize ?? 6;
@@ -8570,6 +9733,15 @@ document.querySelectorAll(".pic-recolor-opt[data-borderstyle]").forEach(btn => {
 });
 
 // ---- Picture Styles: Effects (Shadow / Glow / Reflection) ----
+document.getElementById("picSoftEdgeEnable").addEventListener("change", (e) => {
+    applyToPicTargets(o => { o.softEdge = e.target.checked; });
+});
+document.getElementById("picSoftEdgeSize").addEventListener("input", (e) => {
+    document.getElementById("picSoftEdgeSizeVal").textContent = e.target.value;
+    applyToPicTargetsLive(o => o.softEdgeSize = parseInt(e.target.value));
+});
+document.getElementById("picSoftEdgeSize").addEventListener("change", () => pushHistory(true));
+
 document.getElementById("picShadowEnable").addEventListener("change", (e) => {
     applyToPicTargets(o => {
         o.shadow = e.target.checked;
@@ -8594,6 +9766,24 @@ document.getElementById("picShadowDist").addEventListener("input", (e) => {
     applyToPicTargetsLive(o => o.shadowDistance = parseInt(e.target.value));
 });
 document.getElementById("picShadowDist").addEventListener("change", () => pushHistory(true));
+
+document.getElementById("picInnerShadowEnable").addEventListener("change", (e) => {
+    applyToPicTargets(o => { o.innerShadow = e.target.checked; });
+});
+document.getElementById("picInnerShadowColor").addEventListener("input", (e) => {
+    applyToPicTargetsLive(o => o.innerShadowColor = e.target.value);
+});
+document.getElementById("picInnerShadowColor").addEventListener("change", () => pushHistory(true));
+document.getElementById("picInnerShadowBlur").addEventListener("input", (e) => {
+    document.getElementById("picInnerShadowBlurVal").textContent = e.target.value;
+    applyToPicTargetsLive(o => o.innerShadowBlur = parseInt(e.target.value));
+});
+document.getElementById("picInnerShadowBlur").addEventListener("change", () => pushHistory(true));
+document.getElementById("picInnerShadowDist").addEventListener("input", (e) => {
+    document.getElementById("picInnerShadowDistVal").textContent = e.target.value;
+    applyToPicTargetsLive(o => o.innerShadowDistance = parseInt(e.target.value));
+});
+document.getElementById("picInnerShadowDist").addEventListener("change", () => pushHistory(true));
 
 document.getElementById("picGlowEnable").addEventListener("change", (e) => {
     applyToPicTargets(o => {
@@ -10065,20 +11255,150 @@ function exportPdf() {
 // ============ Spell-check toggle ============
 document.getElementById("spellcheckToggle").addEventListener("change", (e) => {
     spellcheckEnabled = e.target.checked;
-    // Update every text-edit-box currently in the DOM
-    svg.querySelectorAll(".text-edit-box").forEach(div => {
-        div.setAttribute("spellcheck", spellcheckEnabled ? "true" : "false");
-        div.setAttribute("autocorrect", spellcheckEnabled ? "on" : "off");
-        div.setAttribute("autocapitalize", spellcheckEnabled ? "sentences" : "off");
-    });
-    // If one is actively being edited, force the browser to re-evaluate by
-    // briefly removing and restoring contenteditable (no blur, no re-render).
-    const active = document.querySelector('.text-edit-box[contenteditable="true"]');
-    if (active) {
-        active.contentEditable = "false";
-        active.contentEditable = "true";
-    }
+    render(); // rebuild the slide; render loop applies highlights iff spellcheckEnabled
 });
+
+// ============ Spell Check — full-document dialog ============
+(function () {
+    let scQueue = [];   // [{slideIdx, obj, errors:[{word,context}]}]
+    let scPos = 0;      // current error index
+    let changeAllMap = {}; // word → replacement
+
+    const modal      = document.getElementById('scModal');
+    const ctxBox     = document.getElementById('scContextBox');
+    const replInput  = document.getElementById('scReplaceInput');
+    const suggList   = document.getElementById('scSuggList');
+    const statusEl   = document.getElementById('scStatus');
+
+    function open() {
+        changeAllMap = {};
+        scQueue = [];
+        // Collect errors from every slide
+        for (let si = 0; si < state.slides.length; si++) {
+            for (const obj of (state.slides[si].objects || [])) {
+                if (!obj.text || obj.isCode || obj.isEquation || obj.isMarkdown || obj.isLatexBlock) continue;
+                const errors = SC.checkObjectText(obj.text);
+                if (errors.length) scQueue.push({ slideIdx: si, obj, errors });
+            }
+        }
+        scPos = 0;
+        if (!scQueue.length) { setStatus('No spelling errors found.'); modal.style.display = 'flex'; return; }
+        setStatus('');
+        modal.style.display = 'flex';
+        showCurrent();
+    }
+
+    function showCurrent() {
+        if (scPos >= scQueue.length) {
+            ctxBox.innerHTML = '';
+            suggList.innerHTML = '';
+            replInput.value = '';
+            setStatus('Spell check complete.');
+            return;
+        }
+        const entry = scQueue[scPos];
+        const err   = entry.errors[0]; // one error at a time from this object
+        const ctx   = err.context || err.word;
+        const hi    = ctx.replace(new RegExp('(?<![a-zA-Z])' + escapeRe(err.word) + '(?![a-zA-Z])', 'gi'),
+                        m => `<span class="sc-highlight">${m}</span>`);
+        ctxBox.innerHTML = hi;
+        replInput.value  = err.word;
+
+        const suggs = SC.suggest(err.word);
+        if (suggs.length) {
+            suggList.innerHTML = suggs.map((s,i) =>
+                `<li data-s="${s}" class="${i===0?'sc-sugg-selected':''}">${s}</li>`).join('');
+            if (suggs[0]) replInput.value = suggs[0];
+        } else {
+            suggList.innerHTML = '<li class="sc-sugg-empty">No suggestions</li>';
+        }
+    }
+
+    function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
+
+    function advanceError() {
+        const entry = scQueue[scPos];
+        entry.errors.shift();
+        if (!entry.errors.length) scPos++;
+        showCurrent();
+    }
+
+    function replaceInObj(obj, oldWord, newWord) {
+        if (!obj.text) return;
+        const re = new RegExp('(?<![a-zA-Z])' + escapeRe(oldWord) + '(?![a-zA-Z])', 'g');
+        obj.text = obj.text.replace(re, newWord);
+    }
+
+    function applyChange(all) {
+        if (scPos >= scQueue.length) return;
+        const entry  = scQueue[scPos];
+        const err    = entry.errors[0];
+        const newVal = replInput.value.trim();
+        if (!newVal) return;
+        replaceInObj(entry.obj, err.word, newVal);
+        if (all) {
+            changeAllMap[err.word.toLowerCase()] = newVal;
+            // Also replace in any later objects
+            for (let i = scPos + 1; i < scQueue.length; i++) {
+                replaceInObj(scQueue[i].obj, err.word, newVal);
+                scQueue[i].errors = scQueue[i].errors.filter(e => e.word.toLowerCase() !== err.word.toLowerCase());
+            }
+        }
+        // Remove this error from all remaining appearances if all=true
+        if (all) {
+            scQueue.forEach(e => { e.errors = e.errors.filter(x => x.word.toLowerCase() !== err.word.toLowerCase()); });
+        }
+        render();
+        advanceError();
+    }
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+
+    // Suggestion list click
+    suggList.addEventListener('click', e => {
+        const li = e.target.closest('li[data-s]');
+        if (!li) return;
+        suggList.querySelectorAll('li').forEach(x => x.classList.remove('sc-sugg-selected'));
+        li.classList.add('sc-sugg-selected');
+        replInput.value = li.dataset.s;
+    });
+
+    document.getElementById('scChangeBtn').onclick    = () => applyChange(false);
+    document.getElementById('scChangeAllBtn').onclick = () => applyChange(true);
+
+    document.getElementById('scIgnoreBtn').onclick = () => {
+        if (scPos >= scQueue.length) return;
+        advanceError();
+    };
+
+    document.getElementById('scIgnoreAllBtn').onclick = () => {
+        if (scPos >= scQueue.length) return;
+        const word = scQueue[scPos].errors[0]?.word;
+        if (word) {
+            SC.ignoreWord(word);
+            scQueue.forEach(e => { e.errors = e.errors.filter(x => x.word.toLowerCase() !== word.toLowerCase()); });
+            // Remove empty entries
+            scQueue = scQueue.filter(e => e.errors.length > 0);
+            showCurrent();
+        }
+    };
+
+    document.getElementById('scAddBtn').onclick = () => {
+        if (scPos >= scQueue.length) return;
+        const word = scQueue[scPos].errors[0]?.word;
+        if (word) {
+            SC.addToCustom(word);
+            scQueue.forEach(e => { e.errors = e.errors.filter(x => x.word.toLowerCase() !== word.toLowerCase()); });
+            scQueue = scQueue.filter(e => e.errors.length > 0);
+            showCurrent();
+        }
+    };
+
+    document.getElementById('scCloseBtn').onclick = () => { modal.style.display = 'none'; };
+    modal.addEventListener('click', e => { if (e.target === modal) modal.style.display = 'none'; });
+
+    document.getElementById('runSpellCheckBtn').onclick = open;
+})();
 
 // ============ Export: LaTeX (TikZ) + images as .zip ============
 document.getElementById("exportTexBtn").onclick = exportTex;
@@ -10847,10 +12167,21 @@ const slideShowOverlay = document.getElementById("slideShowOverlay");
 const slideShowStage = document.getElementById("slideShowStage");
 let slideShowIndex = 0;
 
+let _ssAnimQueue = [];   // array of animation steps for current slide
+let _ssAnimStep  = 0;    // index of next step to play
+
 function renderSlideShowSlide() {
     const slide = state.slides[slideShowIndex];
     if (!slide) return;
     slideShowStage.innerHTML = buildSlideSvgString(slide, slideShowIndex);
+    _ssAnimQueue = buildSlideAnimQueue(slide);
+    _ssAnimStep  = 0;
+    // Hide objects that have entrance animations
+    const hiddenIds = new Set(_ssAnimQueue.flat().map(i => i.id));
+    hiddenIds.forEach(id => {
+        const el = slideShowStage.querySelector(`[data-id="${id}"]`);
+        if (el) el.style.opacity = "0";
+    });
 }
 
 function startSlideShow() {
@@ -10866,11 +12197,37 @@ function exitSlideShow() {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }
 
+const slideShowBgStage = document.getElementById("slideShowBgStage");
+
 function slideShowGo(delta) {
+    if (delta > 0 && _ssAnimStep < _ssAnimQueue.length) {
+        // Trigger next animation step instead of advancing slide
+        _ssPlayStep(_ssAnimQueue[_ssAnimStep]);
+        _ssAnimStep++;
+        return;
+    }
     const next = slideShowIndex + delta;
     if (next < 0 || next >= state.slides.length) return;
+
+    // Save current content to bg stage for the transition
+    if (slideShowBgStage) {
+        slideShowBgStage.innerHTML = slideShowStage.innerHTML;
+        slideShowBgStage.style.animation = "";
+        slideShowBgStage.style.transform = "";
+        slideShowBgStage.style.clipPath  = "";
+        slideShowBgStage.style.opacity   = "";
+    }
+    slideShowStage.style.animation = "";
+    slideShowStage.style.transform = "";
+    slideShowStage.style.clipPath  = "";
+    slideShowStage.style.opacity   = "";
+
     slideShowIndex = next;
     renderSlideShowSlide();
+
+    // Apply the destination slide's transition
+    const trans = getSlideTransition(state.slides[slideShowIndex]);
+    applySlideTransition(trans, delta);
 }
 
 document.getElementById("slideShowBtn").onclick = startSlideShow;
@@ -10897,3 +12254,1923 @@ document.addEventListener("fullscreenchange", () => {
         slideShowOverlay.classList.remove("active");
     }
 });
+
+// ============ PPTX Import ============
+
+// Parse a PPTX XML string by stripping namespace prefixes so querySelector works normally
+function parsePptxXml(xmlStr) {
+    const clean = xmlStr
+        .replace(/<(\/?)\w+:/g, "<$1")            // <a:solidFill> → <solidFill>
+        .replace(/(\s)\w+:(\w[\w.-]*=)/g, "$1$2"); // r:embed="x" → embed="x" (strip attr ns)
+    return new DOMParser().parseFromString(clean, "application/xml");
+}
+
+// Resolve a PPTX color node to a hex string (handles srgbClr, schemeClr with lumMod/lumOff, prstClr)
+function resolvePptxColor(colorEl, themeColors) {
+    if (!colorEl) return null;
+    const tag = colorEl.tagName.toLowerCase();
+    if (tag === "srgbclr" || tag === "srgbClr") {
+        let hex = "#" + (colorEl.getAttribute("val") || "000000");
+        return applyColorMods(hex, colorEl);
+    }
+    if (tag === "schemeclr" || tag === "schemeClr") {
+        const name = colorEl.getAttribute("val");
+        const base = themeColors[name] || "#808080";
+        return applyColorMods(base, colorEl);
+    }
+    if (tag === "prstclr" || tag === "prstClr") {
+        const prstMap = { black: "#000000", white: "#ffffff", red: "#ff0000", green: "#008000", blue: "#0000ff",
+                          yellow: "#ffff00", cyan: "#00ffff", magenta: "#ff00ff", orange: "#ffa500", gray: "#808080" };
+        return prstMap[colorEl.getAttribute("val")] || "#808080";
+    }
+    // sysClr
+    const lastClr = colorEl.getAttribute("lastClr");
+    return lastClr ? "#" + lastClr : "#000000";
+}
+
+function applyColorMods(hex, colorEl) {
+    const lumMod = colorEl.querySelector("lumMod");
+    const lumOff = colorEl.querySelector("lumOff");
+    const shade = colorEl.querySelector("shade");
+    const tint = colorEl.querySelector("tint");
+    const alpha = colorEl.querySelector("alpha");
+    if (!lumMod && !lumOff && !shade && !tint) return hex;
+    let [r, g, b] = hexToRgb(hex);
+    // Convert to HLS for luminance operations
+    const [h, l, s] = rgbToHls(r, g, b);
+    let nl = l;
+    if (lumMod) nl = nl * (parseInt(lumMod.getAttribute("val")) / 100000);
+    if (lumOff) nl = nl + (parseInt(lumOff.getAttribute("val")) / 100000);
+    if (shade) nl = nl * (parseInt(shade.getAttribute("val")) / 100000);
+    if (tint) nl = nl + (1 - nl) * (1 - parseInt(tint.getAttribute("val")) / 100000);
+    nl = Math.max(0, Math.min(1, nl));
+    const [nr, ng, nb] = hlsToRgb(h, nl, s);
+    return rgbToHex2(nr, ng, nb);
+}
+
+function hexToRgb(hex) {
+    const n = parseInt(hex.replace("#", ""), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255].map(v => v / 255);
+}
+function rgbToHex2(r, g, b) {
+    return "#" + [r, g, b].map(v => Math.round(v * 255).toString(16).padStart(2, "0")).join("");
+}
+function rgbToHls(r, g, b) {
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    if (max === min) return [0, l, 0];
+    const d = max - min;
+    const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    let h = max === r ? (g - b) / d + (g < b ? 6 : 0) : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+    return [h / 6, l, s];
+}
+function hlsToRgb(h, l, s) {
+    if (s === 0) return [l, l, l];
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const hue2rgb = (p, q, t) => { if (t < 0) t += 1; if (t > 1) t -= 1; if (t < 1/6) return p + (q - p) * 6 * t; if (t < 1/2) return q; if (t < 2/3) return p + (q - p) * (2/3 - t) * 6; return p; };
+    return [hue2rgb(p, q, h + 1/3), hue2rgb(p, q, h), hue2rgb(p, q, h - 1/3)];
+}
+
+// Parse fill from a <spPr> or <bgPr> element
+function parsePptxFillEl(spPr, themeColors) {
+    if (!spPr) return null;
+    for (const child of spPr.children) {
+        if (child.tagName.toLowerCase() === "nofill") return { type: "solid", color: "none" };
+        if (child.tagName.toLowerCase() === "solidfill") {
+            const colorEl = child.children[0];
+            const color = resolvePptxColor(colorEl, themeColors);
+            return { type: "solid", color: color || "#808080" };
+        }
+        if (child.tagName.toLowerCase() === "gradfill") {
+            return parsePptxGradient(child, themeColors);
+        }
+        if (child.tagName.toLowerCase() === "blipfill" || child.tagName.toLowerCase() === "pattfill") {
+            return null; // skip pattern/image fill on shapes
+        }
+    }
+    return null;
+}
+
+function parsePptxGradient(gradFillEl, themeColors) {
+    const gsLst = gradFillEl.querySelector("gsLst");
+    if (!gsLst) return null;
+    const stops = [...gsLst.querySelectorAll("gs")].map(gs => {
+        const pos = Math.round(parseInt(gs.getAttribute("pos") || "0") / 1000);
+        const colorEl = gs.children[0];
+        const color = resolvePptxColor(colorEl, themeColors) || "#ffffff";
+        return { pos, color };
+    }).sort((a, b) => a.pos - b.pos);
+    if (stops.length < 2) return null;
+    const lin = gradFillEl.querySelector("lin");
+    // PPTX lin ang is in 60000ths of a degree, measured clockwise from north (top)
+    const pptxAng = parseInt(lin?.getAttribute("ang") || "0");
+    // Convert to CSS-style angle (from top, clockwise): just divide by 60000
+    const angle = Math.round(pptxAng / 60000) % 360;
+    return { type: "gradient", gradientType: "linear", angle, stops };
+}
+
+// Parse stroke from a <spPr> element
+function parsePptxStrokeEl(spPr, themeColors) {
+    if (!spPr) return null;
+    const ln = spPr.querySelector("ln");
+    if (!ln) return null;
+    for (const child of ln.children) {
+        if (child.tagName.toLowerCase() === "nofill") return { color: "none", width: 0, dash: "solid" };
+        if (child.tagName.toLowerCase() === "solidfill") {
+            const colorEl = child.children[0];
+            const color = resolvePptxColor(colorEl, themeColors) || "#000000";
+            const wEmu = parseInt(ln.getAttribute("w") || "9525");
+            const width = Math.max(0.5, Math.min(20, wEmu / 9525));
+            const prstDash = ln.querySelector("prstDash");
+            const dashVal = prstDash?.getAttribute("val") || "solid";
+            const dash = dashVal.includes("dash") ? "dashed" : dashVal.includes("dot") ? "dotted" : "solid";
+            return { color, width, dash };
+        }
+    }
+    return null;
+}
+
+// PPTX preset geom → Folium shape type
+const PPTX_SHAPE_MAP = {
+    rect: "rect", roundRect: "roundrect", ellipse: "ellipse",
+    triangle: "triangle", rtTriangle: "rightTriangle",
+    diamond: "diamond", pentagon: "pentagon", hexagon: "hexagon", octagon: "octagon",
+    parallelogram: "parallelogram", trapezoid: "trapezoid",
+    plus: "cross", star4: "star", star5: "star", star6: "star", star8: "star",
+    star10: "star", star12: "star",
+    chevron: "chevron",
+    rightArrow: "rightArrow", leftArrow: "leftArrow",
+    upArrow: "upArrow", downArrow: "downArrow", leftRightArrow: "doubleArrow",
+    heart: "heart", lightningBolt: "lightningBolt", moon: "moon",
+    cloud: "cloud", donut: "donut", arc: "blockArc",
+};
+const PPTX_STAR_POINTS = { star4: 4, star5: 5, star6: 6, star8: 8, star10: 10, star12: 12 };
+
+function parsePptxTextBody(txBodyEl, themeColors) {
+    if (!txBodyEl) return null;
+    const paras = [...txBodyEl.querySelectorAll("p")];
+    const htmlParts = [];
+    let fontSize = null, fontColor = null, bold = false, italic = false, underline = false;
+    let align = null, fontFamily = null, valign = null;
+
+    // Vertical alignment from bodyPr anchor attribute
+    const bodyPr = txBodyEl.querySelector("bodyPr");
+    if (bodyPr) {
+        const anchor = bodyPr.getAttribute("anchor");
+        if (anchor === "ctr") valign = "middle";
+        else if (anchor === "b") valign = "bottom";
+    }
+
+    paras.forEach(p => {
+        // Capture first paragraph's alignment
+        const pPr = p.querySelector("pPr");
+        if (pPr && !align) {
+            const algn = pPr.getAttribute("algn");
+            if (algn === "ctr") align = "center";
+            else if (algn === "r") align = "right";
+            else if (algn === "just") align = "justify";
+            else if (algn === "l") align = "left";
+        }
+        // Fallback: font size from paragraph default run properties
+        if (fontSize === null && pPr) {
+            const defRPr = pPr.querySelector("defRPr");
+            if (defRPr) {
+                const sz = defRPr.getAttribute("sz");
+                if (sz) fontSize = Math.round(parseInt(sz) / 100);
+            }
+        }
+
+        let currentLine = "";
+
+        // Iterate all direct children to handle <a:r> runs and <a:br> breaks in order
+        for (const child of p.children) {
+            const ctag = child.tagName.toLowerCase();
+            if (ctag === "r") {
+                const rPr = child.querySelector("rPr");
+                if (rPr) {
+                    if (fontSize === null) {
+                        const sz = rPr.getAttribute("sz");
+                        if (sz) fontSize = Math.round(parseInt(sz) / 100);
+                    }
+                    if (!bold) bold = rPr.getAttribute("b") === "1" || rPr.getAttribute("b") === "true";
+                    if (!italic) italic = rPr.getAttribute("i") === "1" || rPr.getAttribute("i") === "true";
+                    if (!underline) {
+                        const u = rPr.getAttribute("u");
+                        if (u && u !== "none") underline = true;
+                    }
+                    if (!fontFamily) {
+                        const latin = rPr.querySelector("latin");
+                        if (latin) fontFamily = latin.getAttribute("typeface");
+                    }
+                    if (!fontColor) {
+                        for (const fc of rPr.children) {
+                            if (fc.tagName.toLowerCase() === "solidfill") {
+                                const colorEl = fc.children[0];
+                                const c = resolvePptxColor(colorEl, themeColors);
+                                if (c) { fontColor = c; break; }
+                            }
+                        }
+                    }
+                }
+                const t = child.querySelector("t");
+                if (t) {
+                    const txt = t.textContent || "";
+                    currentLine += txt.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+                }
+            } else if (ctag === "br") {
+                // Shift+Enter in PowerPoint — line break within a paragraph
+                htmlParts.push(currentLine);
+                currentLine = "";
+            } else if (ctag === "fld") {
+                // Slide field (date, page number) — grab its rendered text if present
+                const t = child.querySelector("t");
+                if (t) currentLine += (t.textContent || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            }
+        }
+        htmlParts.push(currentLine);
+    });
+
+    // Trim trailing blank lines (spacer paragraphs at the end)
+    while (htmlParts.length > 0 && htmlParts[htmlParts.length - 1] === "") htmlParts.pop();
+
+    return { text: htmlParts.join("<br>"), fontSize, fontColor, bold, italic, underline, align, fontFamily, valign };
+}
+
+function parsePptxSpEl(spEl, scaleX, scaleY, themeColors, grpTransform, layoutXfrms) {
+    const xfrm = spEl.querySelector("xfrm");
+    const EMU = 9525;
+    let rawX, rawY, rawW, rawH;
+
+    if (xfrm) {
+        const off = xfrm.querySelector("off");
+        const ext = xfrm.querySelector("ext");
+        if (!off || !ext) return null;
+        rawX = parseInt(off.getAttribute("x") || "0");
+        rawY = parseInt(off.getAttribute("y") || "0");
+        rawW = parseInt(ext.getAttribute("cx") || "0");
+        rawH = parseInt(ext.getAttribute("cy") || "0");
+    } else {
+        // No xfrm on slide — look up placeholder position from slide layout
+        const ph = spEl.querySelector("ph");
+        if (!ph || !layoutXfrms) return null;
+        const phIdx = ph.getAttribute("idx") || "0";
+        const phType = ph.getAttribute("type") || "";
+        const lc = layoutXfrms.get(phIdx) || layoutXfrms.get("type:" + phType);
+        if (!lc) return null;
+        rawX = lc.x; rawY = lc.y; rawW = lc.cx; rawH = lc.cy;
+    }
+
+    // Apply group coordinate transform when inside a grpSp
+    if (grpTransform) {
+        const { offX, offY, extCX, extCY, chOffX, chOffY, chExtCX, chExtCY } = grpTransform;
+        const sx = chExtCX > 0 ? extCX / chExtCX : 1;
+        const sy = chExtCY > 0 ? extCY / chExtCY : 1;
+        rawX = offX + (rawX - chOffX) * sx;
+        rawY = offY + (rawY - chOffY) * sy;
+        rawW = rawW * sx;
+        rawH = rawH * sy;
+    }
+
+    const x = rawX / EMU * scaleX;
+    const y = rawY / EMU * scaleY;
+    const w = rawW / EMU * scaleX;
+    const h = rawH / EMU * scaleY;
+    if (w < 2 || h < 2) return null;
+
+    const rot = parseInt(xfrm?.getAttribute("rot") || "0") / 60000;
+    const flipH = xfrm?.getAttribute("flipH") === "1";
+    const flipV = xfrm?.getAttribute("flipV") === "1";
+
+    // Determine shape type
+    const prstGeom = spEl.querySelector("prstGeom");
+    const prst = prstGeom?.getAttribute("prst") || null;
+    const ph = spEl.querySelector("ph"); // placeholder
+    const txBody = spEl.querySelector("txBody");
+
+    // Decide if text-only or shaped
+    const foliumType = PPTX_SHAPE_MAP[prst] || (ph || !prst ? "text" : "rect");
+    const isTextBox = foliumType === "text";
+
+    const spPr = spEl.querySelector("spPr");
+    const fillData = parsePptxFillEl(spPr, themeColors);
+    const strokeData = parsePptxStrokeEl(spPr, themeColors);
+
+    const obj = makeObject(foliumType, Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+    obj.rotation = rot % 360;
+    if (flipH) obj.flipH = true;
+    if (flipV) obj.flipV = true;
+
+    // Star point count
+    if (PPTX_STAR_POINTS[prst]) obj.points = PPTX_STAR_POINTS[prst];
+
+    // Apply fill — no explicit fill → white for shapes, transparent for text boxes
+    if (fillData) obj.fill = fillData;
+    else if (isTextBox) obj.fill = { type: "solid", color: "none" };
+    else obj.fill = { type: "solid", color: "#ffffff" };
+
+    // Apply stroke — no explicit stroke → none (don't inherit Folium's blue default)
+    if (strokeData) obj.stroke = strokeData;
+    else obj.stroke = { color: "none", width: 0, dash: "solid" };
+
+    // Parse text
+    if (txBody) {
+        const parsed = parsePptxTextBody(txBody, themeColors);
+        if (parsed) {
+            obj.text = parsed.text;
+            if (parsed.fontSize) obj.fontSize = Math.max(6, Math.min(200, parsed.fontSize));
+            if (parsed.fontColor) obj.fontColor = parsed.fontColor;
+            if (parsed.bold) obj.bold = true;
+            if (parsed.italic) obj.italic = true;
+            if (parsed.underline) obj.underline = true;
+            if (parsed.align) obj.align = parsed.align;
+            if (parsed.valign) obj.valign = parsed.valign;
+            if (parsed.fontFamily && parsed.fontFamily !== "+mj-lt" && parsed.fontFamily !== "+mn-lt") {
+                obj.fontFamily = parsed.fontFamily;
+            }
+        }
+    }
+    if (!txBody || !obj.text) {
+        if (!obj.text && foliumType !== "text") obj.text = "";
+    }
+
+    return obj;
+}
+
+function parsePptxPicEl(picEl, scaleX, scaleY, mediaMap, grpTransform) {
+    const xfrm = picEl.querySelector("xfrm");
+    if (!xfrm) return null;
+    const off = xfrm.querySelector("off");
+    const ext = xfrm.querySelector("ext");
+    if (!off || !ext) return null;
+
+    const EMU = 9525;
+    let rawX = parseInt(off.getAttribute("x") || "0");
+    let rawY = parseInt(off.getAttribute("y") || "0");
+    let rawW = parseInt(ext.getAttribute("cx") || "0");
+    let rawH = parseInt(ext.getAttribute("cy") || "0");
+
+    if (grpTransform) {
+        const { offX, offY, extCX, extCY, chOffX, chOffY, chExtCX, chExtCY } = grpTransform;
+        const sx = chExtCX > 0 ? extCX / chExtCX : 1;
+        const sy = chExtCY > 0 ? extCY / chExtCY : 1;
+        rawX = offX + (rawX - chOffX) * sx;
+        rawY = offY + (rawY - chOffY) * sy;
+        rawW = rawW * sx;
+        rawH = rawH * sy;
+    }
+
+    const x = rawX / EMU * scaleX;
+    const y = rawY / EMU * scaleY;
+    const w = rawW / EMU * scaleX;
+    const h = rawH / EMU * scaleY;
+    if (w < 2 || h < 2) return null;
+
+    const blip = picEl.querySelector("blip");
+    const rId = blip ? (blip.getAttribute("embed") || blip.getAttribute("rId")) : null;
+    const src = rId ? mediaMap[rId] : null;
+    if (!src) return null;
+
+    const obj = makeObject("image", Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+    obj.src = src;
+    const rot = parseInt(picEl.querySelector("xfrm")?.getAttribute("rot") || "0") / 60000;
+    obj.rotation = rot % 360;
+    return obj;
+}
+
+async function importPptxFile(file) {
+    const JSZip = window.JSZip;
+    if (!JSZip) { alert("JSZip is not loaded — cannot import PPTX."); return null; }
+
+    const zip = await JSZip.loadAsync(file);
+
+    // Parse presentation.xml for slide list and dimensions
+    const presXml = await zip.file("ppt/presentation.xml").async("text");
+    const presDoc = parsePptxXml(presXml);
+    const sldSz = presDoc.querySelector("sldSz");
+    const pptW = sldSz ? parseInt(sldSz.getAttribute("cx") || "9144000") : 9144000;
+    const pptH = sldSz ? parseInt(sldSz.getAttribute("cy") || "5143500") : 5143500;
+    const EMU = 9525;
+    const srcW = pptW / EMU, srcH = pptH / EMU;
+    // Shrink 12% so PPTX content fits inside Folium's canvas with breathing room;
+    // center the result so margins are symmetric on all sides
+    const PPTX_SHRINK = 0.85;
+    const scaleX = SLIDE_W / srcW * PPTX_SHRINK, scaleY = SLIDE_H / srcH * PPTX_SHRINK;
+    const pptxOffX = SLIDE_W * (1 - PPTX_SHRINK) / 2;
+    const pptxOffY = SLIDE_H * (1 - PPTX_SHRINK) / 2;
+
+    // Parse presentation relationships to get ordered slide list
+    const presRelsXml = await zip.file("ppt/_rels/presentation.xml.rels").async("text");
+    const presRelsDoc = parsePptxXml(presRelsXml);
+    const slideRels = [...presRelsDoc.querySelectorAll("Relationship")]
+        .filter(r => (r.getAttribute("Type") || "").endsWith("/slide"))
+        .sort((a, b) => {
+            const na = parseInt((a.getAttribute("Id") || "0").replace(/\D/g, ""));
+            const nb = parseInt((b.getAttribute("Id") || "0").replace(/\D/g, ""));
+            return na - nb;
+        });
+
+    // Parse theme colors (for color scheme references)
+    const themeColors = {};
+    try {
+        const themeXml = await zip.file("ppt/theme/theme1.xml").async("text");
+        const themeDoc = parsePptxXml(themeXml);
+        const clrScheme = themeDoc.querySelector("clrScheme");
+        if (clrScheme) {
+            for (const child of clrScheme.children) {
+                const name = child.tagName.replace(/^\w+:/, "");
+                const colorEl = child.children[0];
+                if (colorEl) {
+                    const tag = colorEl.tagName.toLowerCase();
+                    if (tag === "srgbclr") themeColors[name] = "#" + colorEl.getAttribute("val");
+                    else if (tag === "sysclr") themeColors[name] = "#" + (colorEl.getAttribute("lastClr") || "000000");
+                }
+            }
+        }
+    } catch (e) { /* no theme */ }
+
+    const newSlides = [];
+
+    for (const rel of slideRels) {
+        const target = rel.getAttribute("Target") || "";
+        // Target is like "slides/slide1.xml" or "../slides/slide1.xml"
+        const slidePath = "ppt/" + target.replace(/^\.\.\//, "").replace(/^ppt\//, "");
+
+        try {
+            const slideXml = await zip.file(slidePath).async("text");
+            const slideDoc = parsePptxXml(slideXml);
+
+            // Load slide relationships (images + layout)
+            const slideRelsPath = slidePath.replace(/([^/]+\.xml)$/, "_rels/$1.rels");
+            const mediaMap = {};
+            let layoutXfrms = null;
+            try {
+                const slideRelsXml = await zip.file(slideRelsPath).async("text");
+                const slideRelsDoc = parsePptxXml(slideRelsXml);
+
+                // Load slide layout for placeholder position fallback
+                const layoutRel = [...slideRelsDoc.querySelectorAll("Relationship")]
+                    .find(r => (r.getAttribute("Type") || "").endsWith("/slideLayout"));
+                if (layoutRel) {
+                    const lt = layoutRel.getAttribute("Target") || "";
+                    const layoutPath = lt.startsWith("../")
+                        ? "ppt/" + lt.replace(/^\.\.\//, "")
+                        : slidePath.replace(/[^/]+$/, "") + lt;
+                    try {
+                        const layoutXml = await zip.file(layoutPath).async("text");
+                        const layoutDoc = parsePptxXml(layoutXml);
+                        layoutXfrms = new Map();
+                        for (const lsp of layoutDoc.querySelectorAll("sp")) {
+                            const lph = lsp.querySelector("ph");
+                            if (!lph) continue;
+                            const lxfrm = lsp.querySelector("xfrm");
+                            if (!lxfrm) continue;
+                            const loff = lxfrm.querySelector("off");
+                            const lext = lxfrm.querySelector("ext");
+                            if (!loff || !lext) continue;
+                            const lc = {
+                                x: parseInt(loff.getAttribute("x") || "0"),
+                                y: parseInt(loff.getAttribute("y") || "0"),
+                                cx: parseInt(lext.getAttribute("cx") || "0"),
+                                cy: parseInt(lext.getAttribute("cy") || "0"),
+                            };
+                            const idx = lph.getAttribute("idx");
+                            const type = lph.getAttribute("type");
+                            if (idx !== null) layoutXfrms.set(idx, lc);
+                            if (type) layoutXfrms.set("type:" + type, lc);
+                        }
+                    } catch (e) { /* layout not found */ }
+                }
+
+                for (const r of slideRelsDoc.querySelectorAll("Relationship")) {
+                    const type = r.getAttribute("Type") || "";
+                    if (!type.endsWith("/image")) continue;
+                    const imgTarget = r.getAttribute("Target") || "";
+                    const imgPath = imgTarget.startsWith("../")
+                        ? "ppt/" + imgTarget.replace(/^\.\.\//, "")
+                        : slidePath.replace(/[^/]+$/, "") + imgTarget;
+                    try {
+                        const imgBase64 = await zip.file(imgPath).async("base64");
+                        const ext = imgPath.split(".").pop().toLowerCase();
+                        const mimeMap = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png",
+                                          gif: "image/gif", svg: "image/svg+xml", bmp: "image/bmp",
+                                          webp: "image/webp", emf: "image/x-emf", wmf: "image/x-wmf" };
+                        const mime = mimeMap[ext] || "image/png";
+                        mediaMap[r.getAttribute("Id")] = `data:${mime};base64,${imgBase64}`;
+                    } catch (e) { /* skip missing image */ }
+                }
+            } catch (e) { /* no rels */ }
+
+            const slide = makeSlide();
+
+            // Parse slide background
+            const bgPr = slideDoc.querySelector("bg bgPr");
+            if (bgPr) {
+                const fill = parsePptxFillEl(bgPr, themeColors);
+                if (fill && fill.color !== "none") slide.fill = fill;
+            }
+            // bgRef (reference to slide master theme background)
+            const bgRef = slideDoc.querySelector("bg bgRef");
+            if (bgRef && !bgPr) {
+                const colorEl = bgRef.children[0];
+                if (colorEl) {
+                    const color = resolvePptxColor(colorEl, themeColors);
+                    if (color) slide.fill = { type: "solid", color };
+                }
+            }
+
+            // Parse shapes from spTree
+            const spTree = slideDoc.querySelector("spTree");
+            if (spTree) {
+                for (const el of spTree.children) {
+                    const tag = el.tagName.toLowerCase().replace(/^\w+:/, "");
+                    let obj = null;
+                    if (tag === "sp") obj = parsePptxSpEl(el, scaleX, scaleY, themeColors, null, layoutXfrms);
+                    else if (tag === "pic") obj = parsePptxPicEl(el, scaleX, scaleY, mediaMap, null);
+                    else if (tag === "grpsp") {
+                        // Read group coordinate transform from grpSpPr > xfrm
+                        const grpSpPr = el.querySelector("grpSpPr");
+                        const gXfrm = grpSpPr ? grpSpPr.querySelector("xfrm") : null;
+                        let grpTransform = null;
+                        if (gXfrm) {
+                            const gOff = gXfrm.querySelector("off");
+                            const gExt = gXfrm.querySelector("ext");
+                            const gChOff = gXfrm.querySelector("chOff");
+                            const gChExt = gXfrm.querySelector("chExt");
+                            if (gOff && gExt && gChOff && gChExt) {
+                                grpTransform = {
+                                    offX:   parseInt(gOff.getAttribute("x")  || "0"),
+                                    offY:   parseInt(gOff.getAttribute("y")  || "0"),
+                                    extCX:  parseInt(gExt.getAttribute("cx") || "1"),
+                                    extCY:  parseInt(gExt.getAttribute("cy") || "1"),
+                                    chOffX: parseInt(gChOff.getAttribute("x")  || "0"),
+                                    chOffY: parseInt(gChOff.getAttribute("y")  || "0"),
+                                    chExtCX:parseInt(gChExt.getAttribute("cx") || "1"),
+                                    chExtCY:parseInt(gChExt.getAttribute("cy") || "1"),
+                                };
+                            }
+                        }
+                        // Flatten group children onto slide
+                        for (const child of el.children) {
+                            const cTag = child.tagName.toLowerCase().replace(/^\w+:/, "");
+                            let cObj = null;
+                            if (cTag === "sp") cObj = parsePptxSpEl(child, scaleX, scaleY, themeColors, grpTransform, layoutXfrms);
+                            else if (cTag === "pic") cObj = parsePptxPicEl(child, scaleX, scaleY, mediaMap, grpTransform);
+                            if (cObj) {
+                                cObj.x += pptxOffX; cObj.y += pptxOffY;
+                                slide.objects.push(cObj);
+                            }
+                        }
+                    }
+                    if (obj) {
+                        obj.x += pptxOffX; obj.y += pptxOffY;
+                        slide.objects.push(obj);
+                    }
+                }
+            }
+
+            // Adaptive fit: if any object overflows the canvas, scale all objects
+            // down uniformly so everything stays within the slide bounds.
+            if (slide.objects.length > 0) {
+                const MARGIN = 10;
+                let bx1 = Infinity, by1 = Infinity, bx2 = -Infinity, by2 = -Infinity;
+                for (const o of slide.objects) {
+                    bx1 = Math.min(bx1, o.x);
+                    by1 = Math.min(by1, o.y);
+                    bx2 = Math.max(bx2, o.x + o.w);
+                    by2 = Math.max(by2, o.y + o.h);
+                }
+                if (bx2 > SLIDE_W - MARGIN || by2 > SLIDE_H - MARGIN || bx1 < MARGIN || by1 < MARGIN) {
+                    const cw = bx2 - bx1, ch = by2 - by1;
+                    const s = Math.min((SLIDE_W - MARGIN * 2) / cw, (SLIDE_H - MARGIN * 2) / ch, 1);
+                    const ox = MARGIN + ((SLIDE_W - MARGIN * 2) - cw * s) / 2 - bx1 * s;
+                    const oy = MARGIN + ((SLIDE_H - MARGIN * 2) - ch * s) / 2 - by1 * s;
+                    for (const o of slide.objects) {
+                        o.x = Math.round(o.x * s + ox);
+                        o.y = Math.round(o.y * s + oy);
+                        o.w = Math.max(4, Math.round(o.w * s));
+                        o.h = Math.max(4, Math.round(o.h * s));
+                        if (o.fontSize) o.fontSize = Math.max(6, Math.round(o.fontSize * s));
+                    }
+                }
+            }
+
+            newSlides.push(slide);
+        } catch (e) {
+            console.warn("Failed to parse slide:", slidePath, e);
+        }
+    }
+
+    return newSlides;
+}
+
+// Wire up the Import PPTX button
+document.getElementById("importPptxBtn").onclick = () => document.getElementById("importPptxInput").click();
+document.getElementById("importPptxInput").onchange = async function () {
+    const file = this.files[0];
+    if (!file) return;
+    this.value = "";
+
+    // Show a loading indicator in the button
+    const btn = document.getElementById("importPptxBtn");
+    const origTitle = btn.title;
+    btn.title = "Importing…";
+    btn.disabled = true;
+
+    try {
+        const newSlides = await importPptxFile(file);
+        if (!newSlides || newSlides.length === 0) {
+            alert("No slides found in the PPTX file, or the file could not be parsed.");
+            return;
+        }
+
+        const msg = `Import ${newSlides.length} slide${newSlides.length > 1 ? "s" : ""} from "${file.name}"?\n\nChoose:\n• OK — replace the current presentation\n• Cancel — append after the current slide`;
+        const replace = confirm(msg);
+
+        pushHistory(true);
+        if (replace) {
+            state.slides = newSlides;
+            state.current = 0;
+        } else {
+            const insertAt = state.current + 1;
+            state.slides.splice(insertAt, 0, ...newSlides);
+            state.current = insertAt;
+        }
+        state.selection = [];
+        render(); renderProperties();
+    } catch (e) {
+        console.error("PPTX import error:", e);
+        alert("Failed to import PPTX: " + e.message);
+    } finally {
+        btn.title = origTitle;
+        btn.disabled = false;
+    }
+};
+
+// ============================================================
+// TEMPLATE GALLERY
+// ============================================================
+
+// Helper: build a slide object from a plain descriptor
+function buildTemplateSlide(desc) {
+    const slide = makeSlide();
+    if (desc.fill) slide.fill = desc.fill;
+    for (const o of (desc.objects || [])) {
+        const obj = makeObject(o.type, o.x, o.y, o.w, o.h);
+        Object.assign(obj, o);
+        // re-stamp a fresh uid so pasted copies don't collide
+        obj.id = uid();
+        slide.objects.push(obj);
+    }
+    return slide;
+}
+
+// ── Shared helpers ───────────────────────────────────────────
+const W = 960, H = 540;
+function tx(type, x, y, w, h, text, extra = {}) {
+    return { type, x, y, w, h, text, fill: { type: "solid", color: "none" },
+             stroke: { color: "none", width: 0, dash: "solid" }, ...extra };
+}
+function rect(x, y, w, h, color, extra = {}) {
+    return { type: "rect", x, y, w, h,
+             fill: { type: "solid", color },
+             stroke: { color: "none", width: 0, dash: "solid" }, ...extra };
+}
+function ellipse(x, y, w, h, color, extra = {}) {
+    return { type: "ellipse", x, y, w, h,
+             fill: { type: "solid", color },
+             stroke: { color: "none", width: 0, dash: "solid" }, ...extra };
+}
+
+// ── TEMPLATE DEFINITIONS ─────────────────────────────────────
+const TEMPLATES = [
+
+    // 1. Elegant Thesis ----------------------------------------
+    {
+        name: "Elegant Thesis",
+        sub: "Clean · Academic",
+        slides: [
+            {   // Title slide
+                fill: { type: "solid", color: "#f7f4ef" },
+                objects: [
+                    rect(0, 0, W, 6, "#c8b89a"),
+                    rect(0, H - 6, W, 6, "#c8b89a"),
+                    rect(30, 30, W - 60, H - 60, "none", { stroke: { color: "#c8b89a", width: 1, dash: "solid" } }),
+                    tx("text", 120, 160, 720, 70, "Elegant Bachelor Thesis",
+                        { fontFamily: "Georgia", fontSize: 36, fontColor: "#3d3228", bold: false, align: "center" }),
+                    tx("text", 280, 242, 400, 2, "", { fill: { type: "solid", color: "#c8b89a" }, stroke: { color: "none", width: 0, dash: "solid" }, type: "rect", h: 1 }),
+                    tx("text", 120, 260, 720, 36, "This is where your presentation begins",
+                        { fontFamily: "Georgia", fontSize: 16, fontColor: "#7a6a5a", align: "center", italic: true }),
+                    tx("text", 120, 340, 720, 28, "Author Name · Institution · Year",
+                        { fontFamily: "Arial", fontSize: 13, fontColor: "#9a8a7a", align: "center" }),
+                    ellipse(440, 465, 12, 12, "#c8b89a"),
+                    ellipse(462, 465, 12, 12, "#d8c8b2"),
+                    ellipse(484, 465, 12, 12, "#c8b89a"),
+                    ellipse(506, 465, 12, 12, "#d8c8b2"),
+                    ellipse(528, 465, 12, 12, "#c8b89a"),
+                ]
+            },
+            {   // Content slide
+                fill: { type: "solid", color: "#f7f4ef" },
+                objects: [
+                    rect(0, 0, W, 6, "#c8b89a"),
+                    rect(0, 70, W, 1, "#c8b89a"),
+                    tx("text", 40, 14, 700, 42, "Section Title",
+                        { fontFamily: "Georgia", fontSize: 26, fontColor: "#3d3228", bold: false }),
+                    tx("text", 40, 90, 620, 380, "• Key point or argument goes here\n• Supporting evidence and analysis\n• Another important finding\n• Conclusion or summary point",
+                        { fontFamily: "Georgia", fontSize: 18, fontColor: "#4a3a2a" }),
+                    rect(700, 80, 220, 370, "#ede7dc"),
+                    tx("text", 714, 90, 192, 350, "Notes or visual placeholder",
+                        { fontFamily: "Georgia", fontSize: 13, fontColor: "#9a8a7a", align: "center", italic: true }),
+                ]
+            },
+        ]
+    },
+
+    // 2. School / Colorful -------------------------------------
+    {
+        name: "School Assignments",
+        sub: "Fun · Multi-purpose",
+        slides: [
+            {
+                fill: { type: "solid", color: "#fff9f0" },
+                objects: [
+                    // blob background shapes
+                    { type: "ellipse", x: -40, y: -40, w: 260, h: 220,
+                      fill: { type: "solid", color: "#ffd166" }, stroke: { color: "none", width: 0, dash: "solid" }, opacity: 80 },
+                    { type: "ellipse", x: 720, y: 300, w: 300, h: 280,
+                      fill: { type: "solid", color: "#06d6a0" }, stroke: { color: "none", width: 0, dash: "solid" }, opacity: 70 },
+                    { type: "ellipse", x: 600, y: -60, w: 220, h: 180,
+                      fill: { type: "solid", color: "#ef476f" }, stroke: { color: "none", width: 0, dash: "solid" }, opacity: 75 },
+                    { type: "ellipse", x: 100, y: 340, w: 180, h: 160,
+                      fill: { type: "solid", color: "#118ab2" }, stroke: { color: "none", width: 0, dash: "solid" }, opacity: 60 },
+                    // center blob
+                    { type: "ellipse", x: 280, y: 120, w: 400, h: 300,
+                      fill: { type: "solid", color: "#ef476f" }, stroke: { color: "none", width: 0, dash: "solid" }, opacity: 90 },
+                    tx("text", 300, 170, 360, 80, "School Assignments",
+                        { fontFamily: "Arial", fontSize: 32, fontColor: "#ffffff", bold: true, align: "center" }),
+                    tx("text", 300, 255, 360, 36, "You starts here",
+                        { fontFamily: "Arial", fontSize: 16, fontColor: "#ffe0ea", align: "center", italic: true }),
+                    // decorative dots
+                    ellipse(260, 140, 18, 18, "#ffd166"),
+                    ellipse(680, 160, 16, 16, "#06d6a0"),
+                    ellipse(160, 400, 14, 14, "#ffd166"),
+                    ellipse(750, 400, 20, 20, "#ef476f", { opacity: 80 }),
+                ]
+            },
+            {
+                fill: { type: "solid", color: "#fff9f0" },
+                objects: [
+                    rect(0, 0, W, 56, "#ef476f"),
+                    tx("text", 20, 8, 700, 40, "Today's Topic",
+                        { fontFamily: "Arial", fontSize: 24, fontColor: "#ffffff", bold: true }),
+                    tx("text", 40, 80, 560, 360, "• Assignment overview\n• Learning objectives\n• Key activities\n• Due dates",
+                        { fontFamily: "Arial", fontSize: 20, fontColor: "#333333" }),
+                    rect(640, 80, 280, 360, "#ffd166", { opacity: 90 }),
+                    tx("text", 656, 160, 248, 200, "✏️\nNotes here",
+                        { fontFamily: "Arial", fontSize: 20, fontColor: "#7a5500", align: "center" }),
+                ]
+            },
+        ]
+    },
+
+    // 3. Minimalist Business -----------------------------------
+    {
+        name: "Minimalist Business",
+        sub: "Clean · Professional",
+        slides: [
+            {
+                fill: { type: "solid", color: "#ffffff" },
+                objects: [
+                    rect(0, 0, W, H, "#ffffff"),
+                    rect(60, 220, 3, 100, "#1a1a1a"),
+                    tx("text", 82, 198, 700, 72, "Minimalist Business Slides",
+                        { fontFamily: "Georgia", fontSize: 38, fontColor: "#1a1a1a", bold: false }),
+                    tx("text", 82, 278, 600, 36, "Here is where your presentation begins",
+                        { fontFamily: "Arial", fontSize: 16, fontColor: "#777777" }),
+                    rect(60, 340, 120, 2, "#1a1a1a"),
+                    tx("text", 82, 356, 400, 28, "Company · 2024",
+                        { fontFamily: "Arial", fontSize: 13, fontColor: "#aaaaaa" }),
+                    rect(W - 160, 0, 160, H, "#f5f5f5"),
+                ]
+            },
+            {
+                fill: { type: "solid", color: "#ffffff" },
+                objects: [
+                    rect(0, 0, W, 80, "#1a1a1a"),
+                    tx("text", 30, 18, 700, 44, "Slide Title",
+                        { fontFamily: "Georgia", fontSize: 26, fontColor: "#ffffff" }),
+                    rect(0, 80, W, 1, "#e0e0e0"),
+                    tx("text", 30, 100, 540, 360, "Main content goes here.\n\nUse this space for key points, data, or analysis. Keep it clean and concise for maximum impact.",
+                        { fontFamily: "Arial", fontSize: 18, fontColor: "#333333" }),
+                    rect(620, 100, 310, 360, "#f5f5f5"),
+                    rect(620, 100, 310, 4, "#1a1a1a"),
+                ]
+            },
+        ]
+    },
+
+    // 4. Beach / Summer ----------------------------------------
+    {
+        name: "Beach Theme",
+        sub: "Vibrant · Summer",
+        slides: [
+            {
+                fill: { type: "gradient", gradientType: "linear", angle: 135,
+                        stops: [{ pos: 0, color: "#06d6a0" }, { pos: 100, color: "#118ab2" }] },
+                objects: [
+                    // sun
+                    ellipse(820, 60, 120, 120, "#ffd166", { opacity: 85 }),
+                    ellipse(820, 60, 80, 80, "#ffcc00"),
+                    // waves
+                    { type: "rect", x: 0, y: 430, w: W, h: 110,
+                      fill: { type: "solid", color: "#023e8a" }, stroke: { color: "none", width: 0, dash: "solid" }, opacity: 60 },
+                    { type: "rect", x: 0, y: 460, w: W, h: 80,
+                      fill: { type: "solid", color: "#0077b6" }, stroke: { color: "none", width: 0, dash: "solid" }, opacity: 70 },
+                    // title card
+                    { type: "rect", x: 80, y: 150, w: 500, h: 200, rx: 16,
+                      fill: { type: "solid", color: "rgba(255,255,255,0.20)" },
+                      stroke: { color: "rgba(255,255,255,0.5)", width: 1.5, dash: "solid" } },
+                    tx("text", 100, 170, 460, 72, "Beach Theme",
+                        { fontFamily: "Arial", fontSize: 42, fontColor: "#ffffff", bold: true }),
+                    tx("text", 100, 248, 460, 36, "Here is where your presentation begins",
+                        { fontFamily: "Arial", fontSize: 15, fontColor: "#d0f0f8" }),
+                    // floatie circles
+                    ellipse(700, 280, 90, 50, "#ef476f", { opacity: 80 }),
+                    ellipse(700, 280, 60, 28, "none", { stroke: { color: "#ffffff", width: 3, dash: "solid" } }),
+                ]
+            },
+            {
+                fill: { type: "gradient", gradientType: "linear", angle: 160,
+                        stops: [{ pos: 0, color: "#caf0f8" }, { pos: 100, color: "#90e0ef" }] },
+                objects: [
+                    rect(0, 0, W, 64, "#0077b6"),
+                    tx("text", 24, 12, 700, 40, "Slide Title",
+                        { fontFamily: "Arial", fontSize: 26, fontColor: "#ffffff", bold: true }),
+                    rect(0, 64, W, 3, "#00b4d8"),
+                    tx("text", 30, 90, 560, 360, "Content area. Add your key points, images, or data visualizations here.\n\n• Point one\n• Point two\n• Point three",
+                        { fontFamily: "Arial", fontSize: 18, fontColor: "#023e8a" }),
+                    ellipse(700, 280, 200, 200, "#0077b6", { opacity: 18 }),
+                ]
+            },
+        ]
+    },
+
+    // 5. Dark Modern -------------------------------------------
+    {
+        name: "Dark Modern",
+        sub: "Bold · Corporate",
+        slides: [
+            {
+                fill: { type: "solid", color: "#0f0f1a" },
+                objects: [
+                    { type: "rect", x: 0, y: 0, w: W, h: H,
+                      fill: { type: "gradient", gradientType: "linear", angle: 135,
+                               stops: [{ pos: 0, color: "#0f0f1a" }, { pos: 100, color: "#1a1a2e" }] },
+                      stroke: { color: "none", width: 0, dash: "solid" } },
+                    ellipse(-80, -80, 400, 400, "#65c8d6", { opacity: 12 }),
+                    ellipse(700, 300, 350, 350, "#a78bfa", { opacity: 10 }),
+                    rect(60, 240, 4, 120, "#65c8d6"),
+                    tx("text", 82, 220, 700, 78, "Dark Modern",
+                        { fontFamily: "Arial", fontSize: 48, fontColor: "#ffffff", bold: true }),
+                    tx("text", 82, 306, 600, 36, "Professional presentation template",
+                        { fontFamily: "Arial", fontSize: 18, fontColor: "#65c8d6" }),
+                    tx("text", 82, 356, 400, 28, "Your Company · 2024",
+                        { fontFamily: "Arial", fontSize: 13, fontColor: "#555577" }),
+                    // accent line
+                    rect(82, 298, 300, 1, "#65c8d6"),
+                ]
+            },
+            {
+                fill: { type: "solid", color: "#0f0f1a" },
+                objects: [
+                    { type: "rect", x: 0, y: 0, w: W, h: H,
+                      fill: { type: "gradient", gradientType: "linear", angle: 135,
+                               stops: [{ pos: 0, color: "#0f0f1a" }, { pos: 100, color: "#1a1a2e" }] },
+                      stroke: { color: "none", width: 0, dash: "solid" } },
+                    rect(0, 0, W, 70, "#1e1e32"),
+                    tx("text", 24, 15, 700, 40, "Section Title",
+                        { fontFamily: "Arial", fontSize: 24, fontColor: "#65c8d6", bold: true }),
+                    rect(0, 70, W, 1, "#2a2a44"),
+                    tx("text", 30, 96, 580, 360, "Your content here.\n\n• Key insight or data point\n• Supporting detail\n• Conclusion",
+                        { fontFamily: "Arial", fontSize: 18, fontColor: "#ccccee" }),
+                    rect(640, 90, 290, 360, "#1e1e32", { stroke: { color: "#2a2a44", width: 1, dash: "solid" } }),
+                    tx("text", 660, 200, 250, 120, "Chart or\nimage area",
+                        { fontFamily: "Arial", fontSize: 16, fontColor: "#555577", align: "center" }),
+                ]
+            },
+        ]
+    },
+
+    // 6. Pastel / Weekly Planner --------------------------------
+    {
+        name: "Weekly Planner",
+        sub: "Bright · Educational",
+        slides: [
+            {
+                fill: { type: "solid", color: "#fff4e6" },
+                objects: [
+                    rect(0, 0, W, H, "#fff4e6"),
+                    // colorful header bar
+                    rect(0, 0, W, 90, "#ff6b6b"),
+                    rect(0, 88, W, 6, "#ffa552"),
+                    tx("text", 20, 12, 720, 64, "Weekly Planner",
+                        { fontFamily: "Arial", fontSize: 36, fontColor: "#ffffff", bold: true }),
+                    tx("text", 20, 60, 500, 30, "Stay organised every day!",
+                        { fontFamily: "Arial", fontSize: 15, fontColor: "#ffe4e4" }),
+                    // day columns
+                    ...[0,1,2,3,4].map(i => {
+                        const days = ["Mon","Tue","Wed","Thu","Fri"];
+                        const cols = ["#ffd6e0","#fff0d6","#d6f5e3","#d6eaff","#f0d6ff"];
+                        const hcols = ["#ff6b6b","#ffa552","#06d6a0","#118ab2","#9b5de5"];
+                        const x2 = 20 + i * 186;
+                        return [
+                            rect(x2, 106, 176, 390, cols[i], { stroke: { color: "#ffffff", width: 2, dash: "solid" } }),
+                            rect(x2, 106, 176, 38, hcols[i]),
+                            tx("text", x2, 110, 176, 30, days[i],
+                                { fontFamily: "Arial", fontSize: 16, fontColor: "#ffffff", bold: true, align: "center" }),
+                            tx("text", x2 + 8, 152, 160, 330, "• Task\n• Task\n• Task",
+                                { fontFamily: "Arial", fontSize: 13, fontColor: "#333333" }),
+                        ];
+                    }).flat(),
+                    // last column
+                    rect(950, 106, 0, 0, "none"),
+                ]
+            },
+            {
+                fill: { type: "solid", color: "#fff4e6" },
+                objects: [
+                    rect(0, 0, W, 70, "#9b5de5"),
+                    tx("text", 20, 14, 700, 42, "This Week's Goals",
+                        { fontFamily: "Arial", fontSize: 26, fontColor: "#ffffff", bold: true }),
+                    rect(0, 70, W, 3, "#ffd6e0"),
+                    ...[0,1,2].map(i => {
+                        const colors = ["#ff6b6b","#06d6a0","#118ab2"];
+                        return [
+                            rect(30, 96 + i*136, 6, 110, colors[i]),
+                            tx("text", 50, 96 + i*136, 860, 36, `Goal ${i+1} Heading`,
+                                { fontFamily: "Arial", fontSize: 20, fontColor: colors[i], bold: true }),
+                            tx("text", 50, 132 + i*136, 860, 90, "Description of this goal goes here. Add key tasks, deadlines, or notes to stay on track.",
+                                { fontFamily: "Arial", fontSize: 15, fontColor: "#444444" }),
+                        ];
+                    }).flat(),
+                ]
+            },
+        ]
+    },
+];
+
+// ── Render SVG thumbnail for a template ──────────────────────
+function renderTemplateThumbnail(template) {
+    const VW = 320, VH = 180;
+    const sx = VW / W, sy = VH / H;
+    const slide = template.slides[0];
+
+    const svgNS2 = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(svgNS2, "svg");
+    svg.setAttribute("viewBox", `0 0 ${VW} ${VH}`);
+    svg.setAttribute("xmlns", svgNS2);
+
+    const defs = document.createElementNS(svgNS2, "defs");
+    svg.appendChild(defs);
+
+    // Background
+    const bg = document.createElementNS(svgNS2, "rect");
+    bg.setAttribute("width", VW); bg.setAttribute("height", VH);
+    const f = slide.fill || { type: "solid", color: "#ffffff" };
+    if (f.type === "gradient" && f.stops) {
+        const gid = "tg" + Math.random().toString(36).slice(2);
+        const grad = document.createElementNS(svgNS2, "linearGradient");
+        grad.setAttribute("id", gid);
+        grad.setAttribute("gradientUnits", "userSpaceOnUse");
+        const ang = (f.angle || 0) * Math.PI / 180;
+        grad.setAttribute("x1", VW/2 - Math.cos(ang)*VW/2); grad.setAttribute("y1", VH/2 - Math.sin(ang)*VH/2);
+        grad.setAttribute("x2", VW/2 + Math.cos(ang)*VW/2); grad.setAttribute("y2", VH/2 + Math.sin(ang)*VH/2);
+        f.stops.forEach(s => {
+            const stop = document.createElementNS(svgNS2, "stop");
+            stop.setAttribute("offset", s.pos + "%");
+            stop.setAttribute("stop-color", s.color);
+            grad.appendChild(stop);
+        });
+        defs.appendChild(grad);
+        bg.setAttribute("fill", `url(#${gid})`);
+    } else {
+        bg.setAttribute("fill", f.color || "#ffffff");
+    }
+    svg.appendChild(bg);
+
+    // Objects (simplified rendering — only rects, ellipses; skip text for perf)
+    for (const o of (slide.objects || [])) {
+        let el = null;
+        const fill = (o.fill?.type === "gradient" && o.fill?.stops) ? (() => {
+            const gid2 = "tg" + Math.random().toString(36).slice(2);
+            const g2 = document.createElementNS(svgNS2, "linearGradient");
+            g2.setAttribute("id", gid2); g2.setAttribute("gradientUnits", "userSpaceOnUse");
+            const a2 = ((o.fill.angle || 0)) * Math.PI / 180;
+            const cx2 = (o.x + o.w/2)*sx, cy2 = (o.y + o.h/2)*sy;
+            const rr = Math.max(o.w, o.h) * Math.max(sx,sy) / 2;
+            g2.setAttribute("x1", cx2 - Math.cos(a2)*rr); g2.setAttribute("y1", cy2 - Math.sin(a2)*rr);
+            g2.setAttribute("x2", cx2 + Math.cos(a2)*rr); g2.setAttribute("y2", cy2 + Math.sin(a2)*rr);
+            o.fill.stops.forEach(s => { const st = document.createElementNS(svgNS2, "stop"); st.setAttribute("offset", s.pos+"%"); st.setAttribute("stop-color", s.color); g2.appendChild(st); });
+            defs.appendChild(g2);
+            return `url(#${gid2})`;
+        })() : (o.fill?.color || "none");
+        const stroke = o.stroke?.color && o.stroke.color !== "none" ? o.stroke.color : "none";
+        const sw = o.stroke?.width || 0;
+        const op = (o.opacity != null && o.opacity < 100) ? o.opacity / 100 : 1;
+
+        if (o.type === "rect" || o.type === "text") {
+            el = document.createElementNS(svgNS2, "rect");
+            el.setAttribute("x", o.x * sx); el.setAttribute("y", o.y * sy);
+            el.setAttribute("width", o.w * sx); el.setAttribute("height", o.h * sy);
+            if (o.rx) el.setAttribute("rx", o.rx * sx);
+        } else if (o.type === "ellipse") {
+            el = document.createElementNS(svgNS2, "ellipse");
+            el.setAttribute("cx", (o.x + o.w/2)*sx); el.setAttribute("cy", (o.y + o.h/2)*sy);
+            el.setAttribute("rx", o.w/2*sx); el.setAttribute("ry", o.h/2*sy);
+        }
+        if (el) {
+            el.setAttribute("fill", fill);
+            el.setAttribute("stroke", stroke);
+            el.setAttribute("stroke-width", sw * Math.min(sx,sy));
+            if (op < 1) el.setAttribute("opacity", op);
+            svg.appendChild(el);
+        }
+    }
+    return svg;
+}
+
+// ── Build and show the gallery ────────────────────────────────
+function openTemplateGallery() {
+    const modal = document.getElementById("templateModal");
+    const grid = document.getElementById("templateGrid");
+    grid.innerHTML = "";
+
+    TEMPLATES.forEach((tpl, idx) => {
+        const card = document.createElement("div");
+        card.className = "tpl-card";
+
+        const thumb = document.createElement("div");
+        thumb.className = "tpl-card-thumb";
+        thumb.appendChild(renderTemplateThumbnail(tpl));
+
+        const label = document.createElement("div");
+        label.className = "tpl-card-label";
+        label.innerHTML = `${tpl.name}<div class="tpl-card-sub">${tpl.sub}</div>`;
+
+        card.appendChild(thumb);
+        card.appendChild(label);
+
+        card.onclick = () => {
+            const msg = `Apply template "${tpl.name}"?\n\n• OK — replace current presentation\n• Cancel — insert after current slide`;
+            const replace = confirm(msg);
+            pushHistory(true);
+            const newSlides = tpl.slides.map(buildTemplateSlide);
+            if (replace) {
+                state.slides = newSlides;
+                state.current = 0;
+            } else {
+                const at = state.current + 1;
+                state.slides.splice(at, 0, ...newSlides);
+                state.current = at;
+            }
+            state.selection = [];
+            render(); renderProperties();
+            modal.style.display = "none";
+        };
+
+        grid.appendChild(card);
+    });
+
+    modal.style.display = "flex";
+}
+
+document.getElementById("templatesBtn").onclick = openTemplateGallery;
+document.getElementById("templateModalClose").onclick = () => {
+    document.getElementById("templateModal").style.display = "none";
+};
+document.getElementById("templateModal").addEventListener("click", e => {
+    if (e.target === document.getElementById("templateModal"))
+        document.getElementById("templateModal").style.display = "none";
+});
+
+// ============================================================
+// Animations Tab
+// ============================================================
+
+// --- Data helpers ---
+
+function getEntrance(obj) {
+    return obj.entrance
+        ? obj.entrance
+        : { type: "none", start: "on-click", duration: 0.5, delay: 0, direction: "from-bottom" };
+}
+
+function animatedObjects(slide) {
+    return slide.objects
+        .map((obj, idx) => ({ obj, idx }))
+        .filter(({ obj }) => obj.entrance && obj.entrance.type && obj.entrance.type !== "none");
+}
+
+function getAnimCssName(type, direction) {
+    if (type === "appear") return "slideAnimAppear";
+    if (type === "fade")   return "slideAnimFade";
+    if (type === "zoom")   return "slideAnimZoom";
+    if (type === "bounce") return "slideAnimBounce";
+    if (type === "spin")   return "slideAnimSpin";
+    if (type === "fly") {
+        if (direction === "from-top")   return "slideAnimFlyTop";
+        if (direction === "from-left")  return "slideAnimFlyLeft";
+        if (direction === "from-right") return "slideAnimFlyRight";
+        return "slideAnimFlyBottom";
+    }
+    return "slideAnimFade";
+}
+
+function objDisplayName(obj) {
+    if (obj.type === "text" || obj.text) return (obj.text || "Text").replace(/\n/g, " ").slice(0, 28);
+    if (obj.type === "image") return "Image";
+    if (obj.type === "chart") return "Chart";
+    return obj.type.charAt(0).toUpperCase() + obj.type.slice(1);
+}
+
+// --- Build animation queue for slideshow ---
+
+function buildSlideAnimQueue(slide) {
+    const items = animatedObjects(slide);
+    if (!items.length) return [];
+
+    const steps = [];
+    let currentStep = null;
+
+    items.forEach(({ obj }) => {
+        const ent = getEntrance(obj);
+        const cssName = getAnimCssName(ent.type, ent.direction || "from-bottom");
+        const duration = typeof ent.duration === "number" ? ent.duration : 0.5;
+        const baseDelay = typeof ent.delay === "number" ? ent.delay : 0;
+
+        const item = { id: obj.id, cssName, duration, delay: baseDelay };
+
+        if (ent.start === "on-click" || !currentStep) {
+            currentStep = [item];
+            steps.push(currentStep);
+        } else if (ent.start === "with-previous") {
+            currentStep.push(item);
+        } else { // after-previous
+            const prevMax = currentStep.reduce(
+                (mx, i) => Math.max(mx, i.delay + i.duration), 0
+            );
+            item.delay = prevMax + baseDelay;
+            currentStep.push(item);
+        }
+    });
+
+    return steps;
+}
+
+function _ssPlayStep(step) {
+    step.forEach(item => {
+        const el = slideShowStage.querySelector(`[data-id="${item.id}"]`);
+        if (!el) return;
+        el.classList.add("slide-anim-el");
+        el.style.opacity = "";
+        el.style.animation = `${item.cssName} ${item.duration}s ease ${item.delay}s both`;
+    });
+}
+
+// --- Editor animation badge overlay ---
+
+function renderAnimBadges() {
+    const existing = document.querySelector("#slideSvg .anim-badges-layer");
+    if (existing) existing.remove();
+
+    const slide = curSlide();
+    const items = animatedObjects(slide);
+    if (!items.length) return;
+
+    const svgEl = document.getElementById("slideSvg");
+    if (!svgEl) return;
+    const layer = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    layer.setAttribute("class", "anim-badges-layer");
+    layer.setAttribute("pointer-events", "none");
+
+    let clickNum = 0;
+    items.forEach(({ obj }) => {
+        const ent = getEntrance(obj);
+        if (ent.start === "on-click") clickNum++;
+
+        const cx = obj.x + 9;
+        const cy = obj.y + 9;
+
+        const circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        circle.setAttribute("cx", cx);
+        circle.setAttribute("cy", cy);
+        circle.setAttribute("r", 8);
+        circle.setAttribute("fill", "#2b6be6");
+        circle.setAttribute("opacity", "0.92");
+        layer.appendChild(circle);
+
+        const text = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        text.setAttribute("x", cx);
+        text.setAttribute("y", cy + 3.5);
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("font-size", "9");
+        text.setAttribute("font-weight", "700");
+        text.setAttribute("fill", "white");
+        text.setAttribute("font-family", "Arial, sans-serif");
+        text.textContent = ent.start === "on-click" ? String(clickNum) : "·";
+        layer.appendChild(text);
+    });
+
+    svgEl.appendChild(layer);
+}
+
+// --- Ribbon sync ---
+
+function updateAnimationsRibbon() {
+    const slide = curSlide();
+    if (!slide) return;
+    const selObjs = state.selection.map(getObj).filter(Boolean);
+    const obj = selObjs.length === 1 ? selObjs[0] : null;
+    const ent = obj ? getEntrance(obj) : null;
+    const hasAnim = ent && ent.type && ent.type !== "none";
+
+    // Highlight active type button
+    document.querySelectorAll(".anim-type-btn").forEach(btn => {
+        const isNone = btn.dataset.anim === "none";
+        const match = ent ? btn.dataset.anim === ent.type : isNone;
+        btn.classList.toggle("anim-active", !!match);
+    });
+
+    // Timing
+    const animStart    = document.getElementById("animStart");
+    const animDuration = document.getElementById("animDuration");
+    const animDelay    = document.getElementById("animDelay");
+    animStart.disabled    = !hasAnim;
+    animDuration.disabled = !hasAnim;
+    animDelay.disabled    = !hasAnim;
+    if (hasAnim) {
+        animStart.value    = ent.start    || "on-click";
+        animDuration.value = (ent.duration != null ? ent.duration : 0.5).toFixed(2);
+        animDelay.value    = (ent.delay    != null ? ent.delay    : 0  ).toFixed(2);
+    } else {
+        animStart.value    = "on-click";
+        animDuration.value = "0.50";
+        animDelay.value    = "0.00";
+    }
+
+    // Effect Options button
+    document.getElementById("animEffectOptionsBtn").disabled = !(hasAnim && ent.type === "fly");
+
+    // Direction menu active state
+    const dir = ent ? (ent.direction || "from-bottom") : "from-bottom";
+    document.querySelectorAll("#animEffectOptionsMenu button[data-anim-dir]").forEach(btn => {
+        btn.classList.toggle("anim-dir-active", btn.dataset.animDir === dir);
+    });
+
+    // Move Earlier/Later
+    const animItems = animatedObjects(slide);
+    const myIdx = obj ? animItems.findIndex(a => a.obj.id === obj.id) : -1;
+    document.getElementById("animMoveEarlierBtn").disabled = myIdx <= 0;
+    document.getElementById("animMoveLaterBtn").disabled   = myIdx === -1 || myIdx >= animItems.length - 1;
+}
+
+// --- Animation Pane ---
+
+var _animPaneVisible = false;
+
+function renderAnimPane() {
+    if (!_animPaneVisible) return;
+    const slide = curSlide();
+    if (!slide) return;
+    const paneBody = document.getElementById("animPaneBody");
+    paneBody.innerHTML = "";
+    const items = animatedObjects(slide);
+
+    if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "anim-pane-empty";
+        empty.textContent = "No animations on this slide. Select an object and choose an animation type above.";
+        paneBody.appendChild(empty);
+        return;
+    }
+
+    let clickNum = 0;
+    items.forEach(({ obj }) => {
+        const ent = getEntrance(obj);
+        if (ent.start === "on-click") clickNum++;
+
+        const row = document.createElement("div");
+        row.className = "anim-pane-item";
+        if (state.selection.includes(obj.id)) row.classList.add("anim-pane-selected");
+
+        const num = document.createElement("div");
+        num.className = "anim-pane-num";
+        num.textContent = ent.start === "on-click" ? String(clickNum) : (ent.start === "with-previous" ? "≡" : "⏱");
+        row.appendChild(num);
+
+        const iconSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+        iconSvg.setAttribute("class", "anim-pane-badge");
+        iconSvg.setAttribute("viewBox", "0 0 24 24");
+        const use = document.createElementNS("http://www.w3.org/2000/svg", "use");
+        use.setAttribute("href", `#icon-anim-${ent.type}`);
+        iconSvg.appendChild(use);
+        row.appendChild(iconSvg);
+
+        const label = document.createElement("div");
+        label.className = "anim-pane-label";
+        label.textContent = objDisplayName(obj);
+        label.title = objDisplayName(obj);
+        row.appendChild(label);
+
+        const startTip = document.createElement("div");
+        startTip.className = "anim-pane-start";
+        startTip.title = ent.start;
+        startTip.textContent = `${(ent.duration || 0.5).toFixed(1)}s`;
+        row.appendChild(startTip);
+
+        row.onclick = () => {
+            state.selection = [obj.id];
+            renderProperties();
+            render();
+        };
+        paneBody.appendChild(row);
+    });
+}
+
+function _showAnimPane() {
+    _animPaneVisible = true;
+    document.getElementById("animPane").style.display = "flex";
+    document.getElementById("animPaneBtn").classList.add("anim-active");
+    renderAnimPane();
+}
+function _hideAnimPane() {
+    _animPaneVisible = false;
+    document.getElementById("animPane").style.display = "none";
+    document.getElementById("animPaneBtn").classList.remove("anim-active");
+}
+
+document.getElementById("animPaneBtn").onclick = () => {
+    if (_animPaneVisible) _hideAnimPane(); else _showAnimPane();
+};
+document.getElementById("animPaneCloseBtn").onclick = _hideAnimPane;
+
+// --- Type buttons ---
+
+document.querySelectorAll(".anim-type-btn").forEach(btn => {
+    btn.onclick = () => {
+        const selObjs = state.selection.map(getObj).filter(Boolean);
+        if (!selObjs.length) return;
+        pushHistory(true);
+        const type = btn.dataset.anim;
+        selObjs.forEach(obj => {
+            if (type === "none") {
+                delete obj.entrance;
+            } else {
+                if (!obj.entrance) {
+                    obj.entrance = { start: "on-click", duration: 0.5, delay: 0, direction: "from-bottom" };
+                }
+                obj.entrance.type = type;
+            }
+        });
+        render();
+        updateAnimationsRibbon();
+        renderAnimPane();
+    };
+});
+
+// --- Effect Options (direction) dropdown ---
+
+const _animEffectBtn  = document.getElementById("animEffectOptionsBtn");
+const _animEffectMenu = document.getElementById("animEffectOptionsMenu");
+
+_animEffectBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    const show = _animEffectMenu.style.display === "none";
+    _animEffectMenu.style.display = show ? "block" : "none";
+});
+_animEffectMenu.addEventListener("click", e => e.stopPropagation());
+document.addEventListener("click", () => { _animEffectMenu.style.display = "none"; });
+
+document.querySelectorAll("#animEffectOptionsMenu button[data-anim-dir]").forEach(btn => {
+    btn.onclick = () => {
+        const selObjs = state.selection.map(getObj).filter(Boolean);
+        if (!selObjs.length) return;
+        pushHistory(true);
+        selObjs.forEach(obj => { if (obj.entrance) obj.entrance.direction = btn.dataset.animDir; });
+        _animEffectMenu.style.display = "none";
+        updateAnimationsRibbon();
+    };
+});
+
+// --- Timing controls ---
+
+document.getElementById("animStart").addEventListener("change", () => {
+    const selObjs = state.selection.map(getObj).filter(Boolean);
+    const val = document.getElementById("animStart").value;
+    selObjs.forEach(obj => { if (obj.entrance) obj.entrance.start = val; });
+    if (selObjs.length) pushHistory(true);
+    renderAnimPane();
+});
+document.getElementById("animDuration").addEventListener("change", () => {
+    const selObjs = state.selection.map(getObj).filter(Boolean);
+    const val = Math.max(0.1, parseFloat(document.getElementById("animDuration").value) || 0.5);
+    selObjs.forEach(obj => { if (obj.entrance) obj.entrance.duration = val; });
+    if (selObjs.length) pushHistory(true);
+    renderAnimPane();
+});
+document.getElementById("animDelay").addEventListener("change", () => {
+    const selObjs = state.selection.map(getObj).filter(Boolean);
+    const val = Math.max(0, parseFloat(document.getElementById("animDelay").value) || 0);
+    selObjs.forEach(obj => { if (obj.entrance) obj.entrance.delay = val; });
+    if (selObjs.length) pushHistory(true);
+});
+
+// --- Move Earlier / Later ---
+
+document.getElementById("animMoveEarlierBtn").onclick = () => {
+    const obj = state.selection.map(getObj).filter(Boolean)[0];
+    if (!obj) return;
+    const slide = curSlide();
+    const items = animatedObjects(slide);
+    const myIdx = items.findIndex(a => a.obj.id === obj.id);
+    if (myIdx <= 0) return;
+    const prev = items[myIdx - 1].idx;
+    const mine = items[myIdx].idx;
+    pushHistory(true);
+    [slide.objects[prev], slide.objects[mine]] = [slide.objects[mine], slide.objects[prev]];
+    render();
+    updateAnimationsRibbon();
+    renderAnimPane();
+};
+
+document.getElementById("animMoveLaterBtn").onclick = () => {
+    const obj = state.selection.map(getObj).filter(Boolean)[0];
+    if (!obj) return;
+    const slide = curSlide();
+    const items = animatedObjects(slide);
+    const myIdx = items.findIndex(a => a.obj.id === obj.id);
+    if (myIdx === -1 || myIdx >= items.length - 1) return;
+    const next = items[myIdx + 1].idx;
+    const mine = items[myIdx].idx;
+    pushHistory(true);
+    [slide.objects[next], slide.objects[mine]] = [slide.objects[mine], slide.objects[next]];
+    render();
+    updateAnimationsRibbon();
+    renderAnimPane();
+};
+
+// --- Preview button ---
+
+document.getElementById("animPreviewBtn").onclick = startSlideShow;
+
+// ============================================================
+// Transitions Tab
+// ============================================================
+
+function getSlideTransition(slide) {
+    return slide.transition || { type: "none", duration: 0.5, direction: "from-right" };
+}
+
+// --- Ribbon sync (safe to call during init — uses only DOM queries) ---
+
+function updateTransitionsRibbon() {
+    const transNone = document.getElementById("transBtnNone");
+    if (!transNone) return; // ribbon not in DOM yet (shouldn't happen with defer, but guard anyway)
+
+    const slide = curSlide();
+    const trans = slide ? getSlideTransition(slide) : { type: "none", duration: 0.5, direction: "from-right" };
+
+    document.querySelectorAll(".trans-type-btn").forEach(btn => {
+        btn.classList.toggle("trans-active", btn.dataset.trans === trans.type);
+    });
+
+    document.getElementById("transDuration").value = (trans.duration || 0.5).toFixed(2);
+
+    const hasDir = trans.type === "push" || trans.type === "wipe";
+    document.getElementById("transOptionsBtn").disabled = !hasDir;
+
+    const dir = trans.direction || "from-right";
+    document.querySelectorAll("#transOptionsMenu button[data-trans-dir]").forEach(btn => {
+        btn.classList.toggle("trans-dir-active", btn.dataset.transDir === dir);
+    });
+}
+
+// --- Slideshow transition engine ---
+
+function applySlideTransition(trans, delta) {
+    const bg = slideShowBgStage;
+    if (!bg) return;
+
+    const type = trans.type || "none";
+    const dur  = trans.duration || 0.5;
+    const dir  = trans.direction || "from-right";
+    const ease = `${dur}s ease both`;
+
+    // No visible transition
+    if (type === "none") {
+        bg.innerHTML = "";
+        return;
+    }
+
+    // Going backwards: reverse direction for push/wipe
+    const reversed = delta < 0;
+
+    if (type === "fade") {
+        slideShowStage.style.animation = `transEnterFade ${ease}`;
+        slideShowBgStage.style.animation = `transExitFade ${ease}`;
+    } else if (type === "push") {
+        const enterAnim = dir === "from-left"   ? "transEnterPushL"
+                        : dir === "from-bottom" ? "transEnterPushD"
+                        : dir === "from-top"    ? "transEnterPushU"
+                        : "transEnterPushR";
+        const exitAnim  = dir === "from-left"   ? "transExitPushL"
+                        : dir === "from-bottom" ? "transExitPushD"
+                        : dir === "from-top"    ? "transExitPushU"
+                        : "transExitPushR";
+        slideShowStage.style.animation    = `${enterAnim} ${ease}`;
+        slideShowBgStage.style.animation  = `${exitAnim} ${ease}`;
+    } else if (type === "wipe") {
+        const enterAnim = dir === "from-left"   ? "transEnterWipeL"
+                        : dir === "from-bottom" ? "transEnterWipeD"
+                        : dir === "from-top"    ? "transEnterWipeU"
+                        : "transEnterWipeR";
+        slideShowStage.style.animation = `${enterAnim} ${ease}`;
+    } else if (type === "zoom") {
+        slideShowStage.style.animation = `transEnterZoom ${ease}`;
+    }
+
+    // Clean up bg after transition completes
+    setTimeout(() => {
+        if (bg) {
+            bg.innerHTML = "";
+            bg.style.animation = "";
+            bg.style.transform = "";
+            bg.style.opacity   = "";
+        }
+        slideShowStage.style.animation = "";
+        slideShowStage.style.transform = "";
+        slideShowStage.style.clipPath  = "";
+        slideShowStage.style.opacity   = "";
+    }, dur * 1000 + 50);
+}
+
+// --- Ribbon button handlers ---
+
+document.querySelectorAll(".trans-type-btn").forEach(btn => {
+    btn.onclick = () => {
+        const slide = curSlide();
+        if (!slide) return;
+        pushHistory(true);
+        if (!slide.transition) slide.transition = { duration: 0.5, direction: "from-right" };
+        const type = btn.dataset.trans;
+        slide.transition.type = type;
+        if (type === "none") delete slide.transition;
+        render();
+    };
+});
+
+const _transOptionsBtn  = document.getElementById("transOptionsBtn");
+const _transOptionsMenu = document.getElementById("transOptionsMenu");
+
+_transOptionsBtn.addEventListener("click", e => {
+    e.stopPropagation();
+    const show = _transOptionsMenu.style.display === "none";
+    _transOptionsMenu.style.display = show ? "block" : "none";
+});
+_transOptionsMenu.addEventListener("click", e => e.stopPropagation());
+document.addEventListener("click", () => { _transOptionsMenu.style.display = "none"; });
+
+document.querySelectorAll("#transOptionsMenu button[data-trans-dir]").forEach(btn => {
+    btn.onclick = () => {
+        const slide = curSlide();
+        if (!slide || !slide.transition) return;
+        pushHistory(true);
+        slide.transition.direction = btn.dataset.transDir;
+        _transOptionsMenu.style.display = "none";
+        updateTransitionsRibbon();
+    };
+});
+
+document.getElementById("transDuration").addEventListener("change", () => {
+    const slide = curSlide();
+    if (!slide || !slide.transition) return;
+    const val = Math.max(0.1, Math.min(9.9, parseFloat(document.getElementById("transDuration").value) || 0.5));
+    slide.transition.duration = val;
+    pushHistory(true);
+});
+
+document.getElementById("transApplyAllBtn").onclick = () => {
+    const slide = curSlide();
+    if (!slide) return;
+    const trans = slide.transition ? { ...slide.transition } : null;
+    pushHistory(true);
+    state.slides.forEach(s => {
+        if (trans) {
+            s.transition = { ...trans };
+        } else {
+            delete s.transition;
+        }
+    });
+    render();
+};
+
+document.getElementById("transPreviewBtn").onclick = startSlideShow;
+
+/* ── Dictionary ─────────────────────────────────────────────────────── */
+(function () {
+    const modal   = document.getElementById("dictModal");
+    const closeBtn = document.getElementById("dictCloseBtn");
+    if (closeBtn) closeBtn.onclick = () => modal.classList.remove("active");
+    if (modal) modal.onclick = (e) => { if (e.target === modal) modal.classList.remove("active"); };
+})();
+
+// ── Dictionary rendering (shared by built-in and Wiktionary paths) ──────────
+function _dictShowLoading(word) {
+    const modal = document.getElementById("dictModal");
+    if (!modal) return;
+    document.getElementById("dictWord").textContent = word;
+    const phonEl = document.getElementById("dictPhonetic");
+    phonEl.textContent = "";
+    phonEl.querySelectorAll("button").forEach(b => b.remove());
+    document.getElementById("dictBody").innerHTML = "<div class=\"dict-loading\">Looking up…</div>";
+    modal.classList.add("active");
+}
+
+function _dictRender(phonetics, audioUrl, posBlocks) {
+    const phonEl  = document.getElementById("dictPhonetic");
+    const bodyEl  = document.getElementById("dictBody");
+    phonEl.textContent = phonetics || "";
+    phonEl.querySelectorAll("button").forEach(b => b.remove());
+    if (audioUrl) {
+        const ab = document.createElement("button");
+        ab.className = "dict-audio-btn";
+        ab.title = "Play pronunciation";
+        ab.innerHTML = "&#128266;";
+        ab.onclick = () => { try { new Audio(audioUrl).play(); } catch(_) {} };
+        phonEl.appendChild(ab);
+    }
+    bodyEl.innerHTML = "";
+    posBlocks.forEach(({label, defs, synonyms}) => {
+        if (!defs || !defs.length) return;
+        const block = document.createElement("div");
+        block.className = "dict-pos-block";
+        const posLabel = document.createElement("div");
+        posLabel.className = "dict-pos-label";
+        posLabel.textContent = label || "";
+        block.appendChild(posLabel);
+        defs.slice(0, 5).forEach((def, i) => {
+            const defDiv = document.createElement("div");
+            defDiv.className = "dict-def";
+            const numSpan = document.createElement("span");
+            numSpan.className = "dict-def-num";
+            numSpan.textContent = (i + 1) + ".";
+            const txtSpan = document.createElement("span");
+            txtSpan.className = "dict-def-text";
+            txtSpan.textContent = " " + (def.text || def);
+            defDiv.appendChild(numSpan);
+            defDiv.appendChild(txtSpan);
+            if (def.example) {
+                const ex = document.createElement("div");
+                ex.className = "dict-example";
+                ex.textContent = "“" + def.example + "”";
+                defDiv.appendChild(ex);
+            }
+            block.appendChild(defDiv);
+        });
+        if (synonyms && synonyms.length) {
+            const synDiv = document.createElement("div");
+            synDiv.className = "dict-synonyms";
+            synDiv.textContent = "Synonyms: ";
+            synonyms.slice(0, 8).forEach((s, idx) => {
+                const sp = document.createElement("span");
+                sp.textContent = s;
+                sp.onclick = () => lookUpWord(s);
+                synDiv.appendChild(sp);
+                if (idx < synonyms.length - 1) synDiv.appendChild(document.createTextNode(", "));
+            });
+            block.appendChild(synDiv);
+        }
+        bodyEl.appendChild(block);
+    });
+    if (!bodyEl.children.length) {
+        bodyEl.innerHTML = "<div class=\"dict-error\">No definitions found.</div>";
+    }
+}
+
+function _dictError(word) {
+    const bodyEl = document.getElementById("dictBody");
+    if (bodyEl) bodyEl.innerHTML = "<div class=\"dict-error\">No definition found for <strong>" + word + "</strong>.</div>";
+}
+
+// Strip HTML tags from a string (for Wiktionary response cleaning).
+function _stripHtml(html) {
+    const d = document.createElement("div");
+    d.innerHTML = html || "";
+    return d.textContent.trim();
+}
+
+// Parse a Wiktionary REST API response for the given language code.
+function _parseWiktionary(data, langCode) {
+    // Try the target language section; fall back to English if not found.
+    const entries = data[langCode] || data["en"] || data[Object.keys(data)[0]] || [];
+    return entries.map(entry => ({
+        label: entry.partOfSpeech || "word",
+        defs: (entry.definitions || []).map(def => {
+            const text = _stripHtml(def.definition || "");
+            const rawEx = (def.parsedExamples && def.parsedExamples[0] && def.parsedExamples[0].example)
+                || (def.examples && def.examples[0]) || null;
+            return { text, example: rawEx ? _stripHtml(rawEx) : null };
+        }).filter(d => d.text),
+        synonyms: []
+    })).filter(b => b.defs.length);
+}
+
+function lookUpWord(word) {
+    _dictShowLoading(word);
+    const lang  = appLanguage;
+    const lower = word.toLowerCase();
+
+    // 1. Built-in dictionary (instant, offline).
+    const builtIn = (window.FOLIUM_DICT || {})[lang];
+    const entry   = builtIn && (builtIn[lower] || builtIn[word]);
+    if (entry) {
+        _dictRender(entry.ph || "", "", (entry.pos || []).map(pe => ({
+            label: pe.p,
+            defs:  (pe.d || []).map((d, i) => ({ text: d, example: i === 0 ? (pe.e || null) : null })),
+            synonyms: pe.syn || []
+        })));
+        return;
+    }
+
+    // 2. localStorage cache (previously fetched via Wiktionary).
+    const cacheKey = "foldict_" + lang + "_" + lower;
+    try {
+        const cached = localStorage.getItem(cacheKey);
+        if (cached) {
+            const parsed = JSON.parse(cached);
+            _dictRender(parsed.ph || "", parsed.audio || "", parsed.pos || []);
+            return;
+        }
+    } catch (_) {}
+
+    // 3. Wiktionary REST API — comprehensive, covers virtually all languages.
+    const wikiLang = (LANGUAGES.find(l => l.code === lang) || {}).code || "en";
+    fetch("https://en.wiktionary.org/api/rest_v1/page/definition/" + encodeURIComponent(word))
+        .then(r => { if (!r.ok) throw new Error("not_found"); return r.json(); })
+        .then(data => {
+            const blocks = _parseWiktionary(data, wikiLang);
+            if (!blocks.length) throw new Error("not_found");
+            const result = { ph: "", audio: "", pos: blocks };
+            try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch(_) {}
+            _dictRender("", "", blocks);
+        })
+        .catch(() => {
+            // 4. Final fallback: Free Dictionary API (English-focused).
+            const dictCode = (LANGUAGES.find(l => l.code === lang) || LANGUAGES[0]).dictCode;
+            fetch("https://api.dictionaryapi.dev/api/v2/entries/" + dictCode + "/" + encodeURIComponent(word))
+                .then(r => { if (!r.ok) throw new Error("not_found"); return r.json(); })
+                .then(data => {
+                    const e = Array.isArray(data) ? data[0] : data;
+                    if (!e) throw new Error("not_found");
+                    const phonetics = e.phonetics || [];
+                    const ph    = (phonetics.find(p => p.text) || {}).text || "";
+                    const audio = (phonetics.find(p => p.audio && p.audio.trim()) || {}).audio || "";
+                    const blocks = (e.meanings || []).map(m => ({
+                        label: m.partOfSpeech,
+                        defs:  (m.definitions || []).map(d => ({ text: d.definition || "", example: d.example || null })),
+                        synonyms: m.synonyms || []
+                    }));
+                    const result = { ph, audio, pos: blocks };
+                    try { localStorage.setItem(cacheKey, JSON.stringify(result)); } catch(_) {}
+                    _dictRender(ph, audio, blocks);
+                })
+                .catch(() => _dictError(word));
+        });
+}
+
+/* ── Status bar & multi-language ────────────────────────────────────────── */
+
+// Extract the best lookup word for the current language from the text selection.
+function _extractLookupWord(lang) {
+    const sel = window.getSelection();
+    if (!sel) return "";
+    const raw = sel.toString().trim();
+    if (!raw) return "";
+    // CJK: no spaces between words; take the entire selection up to 15 chars.
+    if (["ja", "zh", "ko"].includes(lang)) {
+        return raw.replace(/\s/g, "").slice(0, 15);
+    }
+    // All other languages: first whitespace-separated token, strip leading/
+    // trailing punctuation using Unicode property escapes.
+    const first = raw.split(/\s+/)[0];
+    try {
+        return first.replace(/^[^\p{L}]+|[^\p{L}]+$/gu, "").slice(0, 60);
+    } catch (_) {
+        // Fallback for engines without Unicode property escape support
+        return first.replace(/^[^a-zA-ZÀ-ɏЀ-ӿ؀-ۿऀ-ॿ가-힣぀-ヿ一-鿿]+|[^a-zA-ZÀ-ɏЀ-ӿ؀-ۿऀ-ॿ가-힣぀-ヿ一-鿿]+$/g, "").slice(0, 60);
+    }
+}
+
+function _getSlideWordCount() {
+    const slide = curSlide();
+    if (!slide) return 0;
+    let count = 0;
+    function countObj(obj) {
+        if (obj.text && typeof obj.text === "string") {
+            const text = SC.stripHtmlTags(obj.text);
+            count += text.trim().split(/\s+/).filter(w => w.length > 0).length;
+        }
+        if (obj.type === "group" && obj.children) obj.children.forEach(countObj);
+    }
+    slide.objects.forEach(countObj);
+    return count;
+}
+
+function updateStatusBar() {
+    // Word count
+    const wcEl = document.getElementById("statusWordCount");
+    if (wcEl) {
+        const n = _getSlideWordCount();
+        wcEl.textContent = n === 1 ? "1 word" : n + " words";
+    }
+    // Slide count
+    const scEl = document.getElementById("statusSlideCount");
+    if (scEl) {
+        scEl.textContent = "Slide " + (state.current + 1) + " / " + state.slides.length;
+    }
+    // Sync language button label
+    const lang = LANGUAGES.find(l => l.code === appLanguage) || LANGUAGES[0];
+    const flagEl = document.getElementById("sbLangFlag");
+    const nameEl = document.getElementById("sbLangName");
+    if (flagEl) flagEl.textContent = lang.flag;
+    if (nameEl) nameEl.textContent = lang.name;
+    // Sync active highlight in open menu
+    document.querySelectorAll(".sb-lang-opt").forEach(el => {
+        el.classList.toggle("sb-lang-active", el.dataset.code === appLanguage);
+    });
+}
+
+function _applyLanguage(code) {
+    appLanguage = code;
+    localStorage.setItem("folium_lang", appLanguage);
+    document.documentElement.lang = (LANGUAGES.find(l => l.code === appLanguage) || LANGUAGES[0]).bcp;
+    render();
+    _closeLangMenu();
+}
+
+function _closeLangMenu() {
+    const menu = document.getElementById("sbLangMenu");
+    const btn  = document.getElementById("sbLangBtn");
+    if (menu) menu.hidden = true;
+    if (btn)  btn.setAttribute("aria-expanded", "false");
+}
+
+// Build the custom language dropdown and wire up events.
+(function initStatusBar() {
+    const btn  = document.getElementById("sbLangBtn");
+    const menu = document.getElementById("sbLangMenu");
+    if (!btn || !menu) return;
+
+    // Populate the menu
+    LANGUAGES.forEach(l => {
+        const item = document.createElement("button");
+        item.className = "sb-lang-opt" + (l.code === appLanguage ? " sb-lang-active" : "");
+        item.dataset.code = l.code;
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", l.code === appLanguage ? "true" : "false");
+        item.innerHTML =
+            "<span class=\"sb-lang-opt-flag\">" + l.flag + "</span>" +
+            "<span class=\"sb-lang-opt-name\">" + l.name + "</span>" +
+            "<svg class=\"sb-lang-check\" viewBox=\"0 0 12 9\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><polyline points=\"1,4 4.5,8 11,1\"/></svg>";
+        item.onclick = () => _applyLanguage(l.code);
+        menu.appendChild(item);
+    });
+
+    // Toggle dropdown
+    btn.onclick = (e) => {
+        e.stopPropagation();
+        const isOpen = !menu.hidden;
+        if (isOpen) {
+            _closeLangMenu();
+        } else {
+            menu.hidden = false;
+            btn.setAttribute("aria-expanded", "true");
+        }
+    };
+
+    // Close on outside click
+    document.addEventListener("click", (e) => {
+        if (!document.getElementById("sbLangWrap").contains(e.target)) {
+            _closeLangMenu();
+        }
+    });
+
+    // Keyboard navigation
+    btn.addEventListener("keydown", (e) => {
+        if (e.key === "Escape") { _closeLangMenu(); btn.focus(); }
+    });
+
+    // Sync document lang on startup
+    document.documentElement.lang = (LANGUAGES.find(l => l.code === appLanguage) || LANGUAGES[0]).bcp;
+})();
