@@ -677,6 +677,8 @@ function render() {
     bg.setAttribute("x", 0); bg.setAttribute("y", 0);
     bg.setAttribute("width", SLIDE_W); bg.setAttribute("height", SLIDE_H);
     bg.setAttribute("fill", resolveFill(slide, defs));
+    const _bgOp = fillOpacityAttrs(slide.fill);
+    if (_bgOp["fill-opacity"]) bg.setAttribute("fill-opacity", _bgOp["fill-opacity"]);
     bg.setAttribute("style", "filter: drop-shadow(0 4px 18px rgba(0,0,0,0.18));");
     svg.appendChild(bg);
 
@@ -868,6 +870,16 @@ function resolveFill(obj, defs) {
         return `url(#${id})`;
     }
     return f.color || "none";
+}
+
+// Overall fill transparency — applies uniformly on top of whatever the fill
+// resolves to (solid colour, gradient url(), or a parchment/emoji pattern
+// url()), via the standard inherited SVG fill-opacity attribute. Returns {}
+// when there's nothing to override, so spreading it into applyAttrs() is a
+// no-op for the common case.
+function fillOpacityAttrs(fillObj) {
+    const op = fillObj && fillObj.opacity;
+    return (op !== undefined && op !== 100) ? { "fill-opacity": Math.max(0, Math.min(1, op / 100)).toFixed(3) } : {};
 }
 
 function strokeAttrs(obj, defs) {
@@ -1813,6 +1825,319 @@ function renderCustomBordersInto(obj, targetEl) {
     }
 }
 
+// ── Real tone-curve helper (Lightroom-style Blacks/Shadows/Highlights/Whites) ──
+// Builds a sampled lookup table for feComponentTransfer type="table", applied
+// identically to R/G/B, from 5 anchor points across the 0..1 input range:
+// 0 (blacks), 0.25 (shadows), 0.5 (midpoint, fixed), 0.75 (highlights), 1 (whites).
+function clamp01(v) { return Math.max(0, Math.min(1, v)); }
+function buildToneTable(blacks, shadows, highlights, whites) {
+    const b = (blacks || 0) / 100, s = (shadows || 0) / 100, h = (highlights || 0) / 100, w = (whites || 0) / 100;
+    const ax = [0, 0.25, 0.5, 0.75, 1];
+    const ay = [
+        clamp01(b * 0.20),
+        clamp01(0.25 + s * 0.18),
+        0.5,
+        clamp01(0.75 + h * 0.18 + Math.max(w, 0) * 0.06),
+        clamp01(1 + Math.min(w, 0) * 0.22)
+    ];
+    const N = 17;
+    const table = [];
+    for (let i = 0; i < N; i++) {
+        const x = i / (N - 1);
+        let seg = 0;
+        while (seg < ax.length - 2 && x > ax[seg + 1]) seg++;
+        const x0 = ax[seg], x1 = ax[seg + 1], y0 = ay[seg], y1 = ay[seg + 1];
+        const t = x1 > x0 ? (x - x0) / (x1 - x0) : 0;
+        table.push(clamp01(y0 + (y1 - y0) * t));
+    }
+    return table;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  REAL per-pixel photo-editing pipeline (Temperature/Tint, Tone, Clarity,
+//  Vibrance, Noise Reduction) — true algorithms instead of CSS filter hacks,
+//  run on a canvas against the image's original pixel data. Kept off the hot
+//  render path: the original decode and every processed result are cached and
+//  reprocessing is debounced, so dragging a slider stays cheap (every render()
+//  call reuses the last bitmap instantly; the real pixel pass only runs once
+//  ~110ms after the user stops moving the slider).
+// ─────────────────────────────────────────────────────────────────────────────
+const _imgOrigCache = new Map();      // src -> {W,H,data:Uint8ClampedArray}
+const _imgOrigLoading = new Map();    // src -> [callbacks] while decoding
+const _imgProcessedCache = new Map(); // obj.id -> {sig, url}
+const _imgDebounce = new Map();       // obj.id -> timeoutId
+
+function imgAdjustActive(obj) {
+    return !!(obj.imgTemperature || obj.imgTint || obj.imgHighlights || obj.imgShadows ||
+              obj.imgWhites || obj.imgBlacks || obj.imgClarity || obj.imgVibrance || obj.imgNoise);
+}
+function imgAdjustSignature(obj) {
+    return [obj.imgTemperature, obj.imgTint, obj.imgHighlights, obj.imgShadows, obj.imgWhites,
+            obj.imgBlacks, obj.imgClarity, obj.imgVibrance, obj.imgNoise].map(v => v || 0).join(",");
+}
+
+function getOrigImagePixels(src, onReady) {
+    const cached = _imgOrigCache.get(src);
+    if (cached) { onReady(cached); return; }
+    if (_imgOrigLoading.has(src)) { _imgOrigLoading.get(src).push(onReady); return; }
+    _imgOrigLoading.set(src, [onReady]);
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+        const W = img.naturalWidth || img.width, H = img.naturalHeight || img.height;
+        const c = document.createElement("canvas");
+        c.width = W; c.height = H;
+        const cctx = c.getContext("2d");
+        cctx.drawImage(img, 0, 0);
+        let data;
+        try { data = cctx.getImageData(0, 0, W, H).data; }
+        catch (e) { const cbs = _imgOrigLoading.get(src) || []; _imgOrigLoading.delete(src); cbs.forEach(cb => cb(null)); return; }
+        const entry = { W, H, data };
+        _imgOrigCache.set(src, entry);
+        const cbs = _imgOrigLoading.get(src) || [];
+        _imgOrigLoading.delete(src);
+        cbs.forEach(cb => cb(entry));
+    };
+    img.onerror = () => { const cbs = _imgOrigLoading.get(src) || []; _imgOrigLoading.delete(src); cbs.forEach(cb => cb(null)); };
+    img.src = src;
+}
+
+// Separable box blur over a single-channel plane — used for the luminance
+// blur behind real local-contrast (Clarity).
+function boxBlurPlane(src, w, h, radius) {
+    if (radius <= 0) return src.slice();
+    const clampIdx = (v, max) => v < 0 ? 0 : (v >= max ? max - 1 : v);
+    const size = radius * 2 + 1;
+    const tmp = new Float32Array(w * h);
+    for (let y = 0; y < h; y++) {
+        const off = y * w;
+        let sum = 0;
+        for (let x = -radius; x <= radius; x++) sum += src[off + clampIdx(x, w)];
+        for (let x = 0; x < w; x++) {
+            tmp[off + x] = sum / size;
+            sum += src[off + clampIdx(x + radius + 1, w)] - src[off + clampIdx(x - radius, w)];
+        }
+    }
+    const out = new Float32Array(w * h);
+    for (let x = 0; x < w; x++) {
+        let sum = 0;
+        for (let y = -radius; y <= radius; y++) sum += tmp[clampIdx(y, h) * w + x];
+        for (let y = 0; y < h; y++) {
+            out[y * w + x] = sum / size;
+            sum += tmp[clampIdx(y + radius + 1, h) * w + x] - tmp[clampIdx(y - radius, h) * w + x];
+        }
+    }
+    return out;
+}
+
+function rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    let h = 0; const l = (max + min) / 2;
+    const d = max - min;
+    let s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+    if (d !== 0) {
+        if (max === r) h = ((g - b) / d) % 6;
+        else if (max === g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h *= 60; if (h < 0) h += 360;
+    }
+    return [h, s, l];
+}
+function hslToRgb(h, s, l) {
+    const c = (1 - Math.abs(2 * l - 1)) * s;
+    const x = c * (1 - Math.abs((h / 60) % 2 - 1));
+    const m = l - c / 2;
+    let r = 0, g = 0, b = 0;
+    if (h < 60) { r = c; g = x; } else if (h < 120) { r = x; g = c; }
+    else if (h < 180) { g = c; b = x; } else if (h < 240) { g = x; b = c; }
+    else if (h < 300) { r = x; b = c; } else { r = c; b = x; }
+    return [(r + m) * 255, (g + m) * 255, (b + m) * 255];
+}
+
+// Run the real per-pixel pipeline over a copy of the original pixel buffer.
+// Order matches a real editing workflow: white balance -> tone -> clarity ->
+// vibrance -> noise reduction.
+function processImagePixels(orig, obj) {
+    const { W, H, data } = orig;
+    const n = W * H;
+    const out = new Uint8ClampedArray(data);
+
+    // White balance — real per-pixel channel gain (warm/cool via R/B, tint via G)
+    const t = (obj.imgTemperature || 0) / 100, tt = (obj.imgTint || 0) / 100;
+    const wbActive = !!(obj.imgTemperature || obj.imgTint);
+    const rGain = Math.max(0.5, Math.min(1.6, 1 + t * 0.30 + tt * 0.12));
+    const gGain = Math.max(0.5, Math.min(1.6, 1 - tt * 0.18));
+    const bGain = Math.max(0.5, Math.min(1.6, 1 - t * 0.30 + tt * 0.12));
+
+    // Tone — Blacks/Shadows/Highlights/Whites curve, applied via luminance so
+    // hue/saturation aren't dragged around the way independent per-channel
+    // curves would (the classic tell of a "fake" tone tool).
+    const toneActive = !!(obj.imgHighlights || obj.imgShadows || obj.imgWhites || obj.imgBlacks);
+    let toneLUT = null;
+    if (toneActive) {
+        const curve = buildToneTable(obj.imgBlacks, obj.imgShadows, obj.imgHighlights, obj.imgWhites);
+        toneLUT = new Float32Array(17);
+        for (let i = 0; i < 17; i++) toneLUT[i] = curve[i];
+    }
+
+    if (wbActive || toneActive) {
+        for (let i = 0; i < n; i++) {
+            const p = i * 4;
+            let r = out[p], g = out[p + 1], b = out[p + 2];
+            if (wbActive) { r *= rGain; g *= gGain; b *= bGain; }
+            if (toneActive) {
+                const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+                if (luma < 1) {
+                    const target = toneLUT[0] * 255;
+                    r = target; g = target; b = target;
+                } else {
+                    const x = Math.min(1, luma / 255) * 16;
+                    const seg = Math.min(15, Math.floor(x));
+                    const frac = x - seg;
+                    const y = toneLUT[seg] + (toneLUT[seg + 1] - toneLUT[seg]) * frac;
+                    const factor = (y * 255) / luma;
+                    r *= factor; g *= factor; b *= factor;
+                }
+            }
+            out[p] = r; out[p + 1] = g; out[p + 2] = b;
+        }
+    }
+
+    // Clarity — real local contrast: blur the LUMINANCE plane only, then push
+    // the original luminance away from that blurred version and apply the
+    // same delta to all 3 channels so colour/saturation stay untouched.
+    if (obj.imgClarity) {
+        const amt = (obj.imgClarity / 100) * 0.9;
+        const luma = new Float32Array(n);
+        for (let i = 0; i < n; i++) {
+            const p = i * 4;
+            luma[i] = 0.299 * out[p] + 0.587 * out[p + 1] + 0.114 * out[p + 2];
+        }
+        const blurred = boxBlurPlane(luma, W, H, 8);
+        for (let i = 0; i < n; i++) {
+            const p = i * 4;
+            const delta = (luma[i] - blurred[i]) * amt;
+            out[p] = out[p] + delta;
+            out[p + 1] = out[p + 1] + delta;
+            out[p + 2] = out[p + 2] + delta;
+        }
+    }
+
+    // Vibrance — real HSL-based selective saturation: muted colours get most
+    // of the boost, already-vivid colours get very little, and the typical
+    // skin-tone hue band is protected so faces don't turn orange.
+    if (obj.imgVibrance) {
+        const v = obj.imgVibrance / 100;
+        for (let i = 0; i < n; i++) {
+            const p = i * 4;
+            const [h, s, l] = rgbToHsl(out[p], out[p + 1], out[p + 2]);
+            if (s <= 0.003) continue;
+            let boost = v * (1 - s) * 0.9;
+            if (h >= 5 && h <= 45) boost *= 0.45;
+            const newS = clamp01(s + boost);
+            const [r2, g2, b2] = hslToRgb(h, newS, l);
+            out[p] = r2; out[p + 1] = g2; out[p + 2] = b2;
+        }
+    }
+
+    // Noise reduction — small-window bilateral-style filter: blends each pixel
+    // with neighbours weighted by colour similarity, so flat/noisy regions
+    // smooth out while real edges (big colour jumps) are left alone, instead
+    // of softening the whole image uniformly.
+    if (obj.imgNoise && obj.imgNoise > 0) {
+        const strength = Math.min(obj.imgNoise / 10, 1);
+        const radius = 2;
+        const colorSigma = 12 + strength * 50;
+        const denom = 2 * colorSigma * colorSigma;
+        const src = new Uint8ClampedArray(out);
+        for (let y = 0; y < H; y++) {
+            for (let x = 0; x < W; x++) {
+                const ci = (y * W + x) * 4;
+                const cr = src[ci], cg = src[ci + 1], cb = src[ci + 2];
+                let wr = 0, wg = 0, wb = 0, wsum = 0;
+                for (let dy = -radius; dy <= radius; dy++) {
+                    const ny = y + dy; if (ny < 0 || ny >= H) continue;
+                    for (let dx = -radius; dx <= radius; dx++) {
+                        const nx = x + dx; if (nx < 0 || nx >= W) continue;
+                        const ni = (ny * W + nx) * 4;
+                        const nr = src[ni], ng = src[ni + 1], nb = src[ni + 2];
+                        const dr = nr - cr, dg = ng - cg, db = nb - cb;
+                        const wgt = Math.exp(-(dr*dr + dg*dg + db*db) / denom);
+                        wr += nr * wgt; wg += ng * wgt; wb += nb * wgt; wsum += wgt;
+                    }
+                }
+                if (wsum > 0) {
+                    out[ci]   = cr + (wr / wsum - cr) * strength;
+                    out[ci+1] = cg + (wg / wsum - cg) * strength;
+                    out[ci+2] = cb + (wb / wsum - cb) * strength;
+                }
+            }
+        }
+    }
+
+    return out;
+}
+
+// Returns the best href to display right now for `obj` — the original src if
+// no real-pixel adjustment is active, otherwise the freshest cached processed
+// bitmap. If the cache is stale (slider moved), (re)processing is scheduled
+// on a short debounce and `render()` is called again once it finishes, so a
+// burst of slider input only triggers one real pixel pass, not one per tick.
+function getProcessedImageSrc(obj) {
+    if (!imgAdjustActive(obj)) return obj.src;
+    const sig = imgAdjustSignature(obj);
+    const cached = _imgProcessedCache.get(obj.id);
+    if (cached && cached.sig === sig) return cached.url;
+
+    if (_imgDebounce.has(obj.id)) clearTimeout(_imgDebounce.get(obj.id));
+    _imgDebounce.set(obj.id, setTimeout(() => {
+        _imgDebounce.delete(obj.id);
+        getOrigImagePixels(obj.src, (orig) => {
+            if (!orig || imgAdjustSignature(obj) !== sig) return; // stale or CORS-tainted
+            const processed = processImagePixels(orig, obj);
+            const c = document.createElement("canvas");
+            c.width = orig.W; c.height = orig.H;
+            c.getContext("2d").putImageData(new ImageData(processed, orig.W, orig.H), 0, 0);
+            _imgProcessedCache.set(obj.id, { sig, url: c.toDataURL("image/png") });
+            render();
+        });
+    }, 110));
+
+    return (cached && cached.url) || obj.src;
+}
+
+// Force the real-pixel cache fully up to date for every picture on every
+// slide, bypassing the normal debounce. getProcessedImageSrc() intentionally
+// shows a stale/fallback bitmap while a debounce settles so dragging a slider
+// stays cheap — but that's wrong for exports, which should always reflect
+// the adjustments actually on screen. Called before PDF export.
+function ensureImagesProcessed() {
+    const jobs = [];
+    for (const slide of state.slides) {
+        for (const obj of slide.objects || []) {
+            if (obj.type !== "image" || !imgAdjustActive(obj)) continue;
+            const sig = imgAdjustSignature(obj);
+            const cached = _imgProcessedCache.get(obj.id);
+            if (cached && cached.sig === sig) continue;
+            if (_imgDebounce.has(obj.id)) { clearTimeout(_imgDebounce.get(obj.id)); _imgDebounce.delete(obj.id); }
+            jobs.push(new Promise(resolve => {
+                getOrigImagePixels(obj.src, (orig) => {
+                    if (orig && imgAdjustSignature(obj) === sig) {
+                        const processed = processImagePixels(orig, obj);
+                        const c = document.createElement("canvas");
+                        c.width = orig.W; c.height = orig.H;
+                        c.getContext("2d").putImageData(new ImageData(processed, orig.W, orig.H), 0, 0);
+                        _imgProcessedCache.set(obj.id, { sig, url: c.toDataURL("image/png") });
+                    }
+                    resolve();
+                });
+            }));
+        }
+    }
+    return jobs.length ? Promise.all(jobs) : Promise.resolve();
+}
+
 function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
     const g = document.createElementNS(svgNS, "g");
     if (topLevel) {
@@ -1822,6 +2147,11 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
     const cx = obj.x + obj.w / 2, cy = obj.y + obj.h / 2;
     const transform = shapeTransform(obj);
     if (transform) g.setAttribute("transform", transform);
+
+    // fill-opacity is inherited, so setting it once here covers every shape
+    // branch below (rect/ellipse/polygon/freeform/etc.) without touching each one.
+    const fillOp = fillOpacityAttrs(obj.fill);
+    if (fillOp["fill-opacity"]) g.setAttribute("fill-opacity", fillOp["fill-opacity"]);
 
     const fill = resolveFill(obj, defs);
     const sAttrs = strokeAttrs(obj, defs);
@@ -2124,10 +2454,19 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             // plain `href` (SVG2) survives XMLSerializer round-trips used for
             // slide show / PDF export; `xlink:href` would serialize with an
             // unbound "ns1:" prefix that browsers don't resolve as an image source.
-            shape.setAttribute("href", obj.src);
+            //
+            // White balance, tone, clarity, vibrance and noise reduction are real
+            // per-pixel algorithms (HSL-aware vibrance with skin-tone protection,
+            // luminance-only clarity/tone, a bilateral-style denoiser — see
+            // processImagePixels above), run on a canvas against the original
+            // pixels and cached/debounced so dragging a slider stays cheap. The
+            // href below is the processed bitmap when any of those are active,
+            // or the plain original otherwise.
+            shape.setAttribute("href", getProcessedImageSrc(obj));
 
-            // Non-destructive CSS/SVG filter pipeline — no pixel data is modified.
-            // Order: exposure → tone → colour → presence → artistic
+            // Remaining adjustments are genuinely correct as simple, fast CSS
+            // filters and are layered on top of the (possibly already-processed)
+            // bitmap above.
             const imgFilters = [];
 
             // Exposure
@@ -2136,75 +2475,17 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             if (obj.imgContrast !== undefined && obj.imgContrast !== 100)
                 imgFilters.push(`contrast(${obj.imgContrast / 100})`);
 
-            // Tone (Lightroom-style)
-            if (obj.imgHighlights) {
-                const h = obj.imgHighlights / 100;
-                imgFilters.push(h > 0
-                    ? `brightness(${(1 + h * 0.28).toFixed(3)}) contrast(${(1 - h * 0.10).toFixed(3)})`
-                    : `brightness(${(1 + h * 0.15).toFixed(3)}) contrast(${(1 - h * 0.18).toFixed(3)})`);
-            }
-            if (obj.imgShadows) {
-                const s = obj.imgShadows / 100;
-                imgFilters.push(s > 0
-                    ? `brightness(${(1 + s * 0.18).toFixed(3)}) contrast(${(1 - s * 0.12).toFixed(3)})`
-                    : `brightness(${(1 + s * 0.10).toFixed(3)}) contrast(${(1 - s * 0.22).toFixed(3)})`);
-            }
-            if (obj.imgWhites) {
-                const w = obj.imgWhites / 100;
-                imgFilters.push(`brightness(${(1 + w * 0.20).toFixed(3)})`);
-            }
-            if (obj.imgBlacks) {
-                const b = obj.imgBlacks / 100;
-                imgFilters.push(b < 0
-                    ? `contrast(${(1 - b * 0.25).toFixed(3)}) brightness(${(1 + b * 0.06).toFixed(3)})`
-                    : `brightness(${(1 + b * 0.10).toFixed(3)}) contrast(${(1 - b * 0.12).toFixed(3)})`);
-            }
-
-            // White balance
-            if (obj.imgTemperature) {
-                const t = obj.imgTemperature / 100;
-                if (t > 0) {
-                    imgFilters.push(`sepia(${(t * 0.25).toFixed(3)})`);
-                    imgFilters.push(`saturate(${(1 + t * 0.35).toFixed(3)})`);
-                    imgFilters.push(`hue-rotate(${(-t * 14).toFixed(1)}deg)`);
-                } else {
-                    imgFilters.push(`saturate(${(1 + t * 0.20).toFixed(3)})`);
-                    imgFilters.push(`hue-rotate(${(-t * 14).toFixed(1)}deg)`);
-                }
-            }
-            if (obj.imgTint) {
-                const t = obj.imgTint / 100;
-                // positive = magenta, negative = green
-                imgFilters.push(`hue-rotate(${(t > 0 ? -t * 12 : -t * 50).toFixed(1)}deg)`);
-                imgFilters.push(`saturate(${(1 + Math.abs(t) * 0.15).toFixed(3)})`);
-            }
-
-            // Colour
-            if (obj.imgVibrance) {
-                // Vibrance: gentler than saturation, boosts muted colours more
-                imgFilters.push(`saturate(${(1 + obj.imgVibrance / 100 * 0.6).toFixed(3)})`);
-            }
+            // Colour (Saturation/Hue are already correct, linear operations)
             if (obj.imgSaturation !== undefined && obj.imgSaturation !== 100)
                 imgFilters.push(`saturate(${obj.imgSaturation / 100})`);
             if (obj.imgHue)
                 imgFilters.push(`hue-rotate(${obj.imgHue}deg)`);
 
-            // Presence
-            if (obj.imgClarity) {
-                const c = obj.imgClarity / 100;
-                imgFilters.push(`contrast(${(1 + c * 0.28).toFixed(3)})`);
-                if (c > 0) imgFilters.push(`saturate(${(1 + c * 0.12).toFixed(3)})`);
-            }
-
-            // Noise reduction (gentle blur)
-            if (obj.imgNoise && obj.imgNoise > 0)
-                imgFilters.push(`blur(${(obj.imgNoise * 0.12).toFixed(2)}px)`);
-
-            // Soften (negative sharpen)
+            // Soften (negative sharpen) — a plain blur is the correct tool here
             if (obj.imgSharpen && obj.imgSharpen < 0)
                 imgFilters.push(`blur(${(Math.abs(obj.imgSharpen) * 0.35).toFixed(2)}px)`);
 
-            // Artistic presets
+            // Artistic presets — intentional stylised looks, not correction tools
             const artisticFilters = {
                 grayscale:    "grayscale(1)",
                 sepia:        "sepia(0.8)",
@@ -2224,8 +2505,8 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
 
             if (imgFilters.length) shape.style.filter = imgFilters.join(" ");
 
-            // Real unsharp-mask sharpen via SVG feConvolveMatrix.
-            // Wrapped in a <g> so it composes on top of the CSS filters above.
+            // Real unsharp-mask sharpen via SVG feConvolveMatrix — stays outermost
+            // (sharpening happens last in a real editing workflow, after tone/colour).
             if (obj.imgSharpen && obj.imgSharpen > 0) {
                 const shpId = "img-sharpen-" + obj.id;
                 const shpFilt = document.createElementNS(svgNS, "filter");
@@ -2241,9 +2522,6 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
                 const shpG = document.createElementNS(svgNS, "g");
                 shpG.setAttribute("filter", `url(#${shpId})`);
                 shpG.appendChild(shape);
-                if (shape._picBorderRect) { shpG._picBorderRect = shape._picBorderRect; delete shape._picBorderRect; }
-                if (shape._vigRect) { shpG._vigRect = shape._vigRect; delete shape._vigRect; }
-                if (shape._grainRect) { shpG._grainRect = shape._grainRect; delete shape._grainRect; }
                 shape = shpG;
             }
 
@@ -2354,7 +2632,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
                 const miniDefs = document.createElementNS(svgNS, "defs");
                 miniSvg.appendChild(miniDefs);
                 const bgRect = document.createElementNS(svgNS, "rect");
-                applyAttrs(bgRect, { x: 0, y: 0, width: SLIDE_W, height: SLIDE_H, fill: resolveFill(targetSlide, miniDefs) });
+                applyAttrs(bgRect, { x: 0, y: 0, width: SLIDE_W, height: SLIDE_H, fill: resolveFill(targetSlide, miniDefs), ...fillOpacityAttrs(targetSlide.fill) });
                 miniSvg.appendChild(bgRect);
                 targetSlide.objects.forEach(o => miniSvg.appendChild(renderObject(o, miniDefs, false, obj.targetSlide)));
                 wrapper.appendChild(miniSvg);
@@ -10121,18 +10399,24 @@ function bgrOpen(obj) {
 
         bgrSession = {
             obj, srcData, W, H,
+            offscreenCanvas: offscreen,
             removeMask, keepMask, initRemoveMask,
             tool: "remove",
             brushSize: 15,
+            feather: 2,
             mouseDown: false,
             lastX: -1, lastY: -1,
         };
 
         document.getElementById("bgrModal").classList.add("active");
+        document.getElementById("bgrSmartSelectBtn").classList.remove("active");
         document.getElementById("bgrMarkRemoveBtn").classList.add("active");
         document.getElementById("bgrMarkKeepBtn").classList.remove("active");
         document.getElementById("bgrBrushSlider").value = 15;
         document.getElementById("bgrBrushSizeLabel").textContent = "15";
+        document.getElementById("bgrFeatherSlider").value = 2;
+        document.getElementById("bgrFeatherLabel").textContent = "2";
+        document.getElementById("bgrSmartStatus").textContent = "";
 
         bgrRender();
     };
@@ -10264,36 +10548,87 @@ function bgrRender(cursorX, cursorY) {
     }
     ctx.putImageData(display, 0, 0);
 
-    // Brush cursor preview
+    // Cursor preview
     if (cursorX !== undefined && cursorY !== undefined) {
         const rect   = canvas.getBoundingClientRect();
         const pxScale = rect.width > 0 ? W / rect.width : 1;
-        const isRemoveTool = tool === "remove";
         ctx.save();
-        ctx.strokeStyle = isRemoveTool ? "rgba(255,80,80,0.95)" : "rgba(50,215,85,0.95)";
-        ctx.lineWidth   = Math.max(1, 1.5 * pxScale);
-        ctx.setLineDash([4 * pxScale, 3 * pxScale]);
-        ctx.beginPath();
-        ctx.arc(cursorX, cursorY, brushSize, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.lineWidth = Math.max(1, 2 * pxScale);
-        const arm = brushSize * 0.38;
-        ctx.beginPath();
-        ctx.moveTo(cursorX - arm, cursorY);
-        ctx.lineTo(cursorX + arm, cursorY);
-        if (!isRemoveTool) {
-            ctx.moveTo(cursorX, cursorY - arm);
-            ctx.lineTo(cursorX, cursorY + arm);
+        if (tool === "smart") {
+            // Smart Select isn't a brush — show a small click-target crosshair instead.
+            const r = 9 * pxScale;
+            ctx.strokeStyle = "rgba(180,130,255,0.95)";
+            ctx.lineWidth = Math.max(1, 1.6 * pxScale);
+            ctx.beginPath();
+            ctx.arc(cursorX, cursorY, r, 0, Math.PI * 2);
+            ctx.moveTo(cursorX - r * 1.6, cursorY); ctx.lineTo(cursorX - r * 0.6, cursorY);
+            ctx.moveTo(cursorX + r * 0.6, cursorY); ctx.lineTo(cursorX + r * 1.6, cursorY);
+            ctx.moveTo(cursorX, cursorY - r * 1.6); ctx.lineTo(cursorX, cursorY - r * 0.6);
+            ctx.moveTo(cursorX, cursorY + r * 0.6); ctx.lineTo(cursorX, cursorY + r * 1.6);
+            ctx.stroke();
+        } else {
+            const isRemoveTool = tool === "remove";
+            ctx.strokeStyle = isRemoveTool ? "rgba(255,80,80,0.95)" : "rgba(50,215,85,0.95)";
+            ctx.lineWidth   = Math.max(1, 1.5 * pxScale);
+            ctx.setLineDash([4 * pxScale, 3 * pxScale]);
+            ctx.beginPath();
+            ctx.arc(cursorX, cursorY, brushSize, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.lineWidth = Math.max(1, 2 * pxScale);
+            const arm = brushSize * 0.38;
+            ctx.beginPath();
+            ctx.moveTo(cursorX - arm, cursorY);
+            ctx.lineTo(cursorX + arm, cursorY);
+            if (!isRemoveTool) {
+                ctx.moveTo(cursorX, cursorY - arm);
+                ctx.lineTo(cursorX, cursorY + arm);
+            }
+            ctx.stroke();
         }
-        ctx.stroke();
         ctx.restore();
     }
 }
 
+// Separable box blur (clamped at the edges) — used to soften the binary
+// keep/remove mask into a smooth 0..1 alpha falloff for feathered cutouts.
+function bgrBoxBlur1D(src, w, h, radius, horizontal) {
+    const out = new Float32Array(w * h);
+    const clampIdx = (v, max) => v < 0 ? 0 : (v >= max ? max - 1 : v);
+    const size = radius * 2 + 1;
+    if (horizontal) {
+        for (let y = 0; y < h; y++) {
+            const rowOff = y * w;
+            let sum = 0;
+            for (let x = -radius; x <= radius; x++) sum += src[rowOff + clampIdx(x, w)];
+            for (let x = 0; x < w; x++) {
+                out[rowOff + x] = sum / size;
+                sum += src[rowOff + clampIdx(x + radius + 1, w)] - src[rowOff + clampIdx(x - radius, w)];
+            }
+        }
+    } else {
+        for (let x = 0; x < w; x++) {
+            let sum = 0;
+            for (let y = -radius; y <= radius; y++) sum += src[clampIdx(y, h) * w + x];
+            for (let y = 0; y < h; y++) {
+                out[y * w + x] = sum / size;
+                sum += src[clampIdx(y + radius + 1, h) * w + x] - src[clampIdx(y - radius, h) * w + x];
+            }
+        }
+    }
+    return out;
+}
+function bgrFeatherMask(keepBinary, W, H, radius) {
+    if (radius <= 0) return keepBinary;
+    return bgrBoxBlur1D(bgrBoxBlur1D(keepBinary, W, H, radius, true), W, H, radius, false);
+}
+
 function bgrApplyFinal() {
     if (!bgrSession) return;
-    const { obj, srcData, W, H, removeMask, keepMask } = bgrSession;
+    const { obj, srcData, W, H, removeMask, keepMask, feather } = bgrSession;
+
+    const keepBinary = new Float32Array(W * H);
+    for (let i = 0; i < W * H; i++) keepBinary[i] = (removeMask[i] && !keepMask[i]) ? 0 : 1;
+    const softMask = bgrFeatherMask(keepBinary, W, H, Math.round(feather || 0));
 
     const offscreen = document.createElement("canvas");
     offscreen.width = W; offscreen.height = H;
@@ -10305,7 +10640,7 @@ function bgrApplyFinal() {
         rp[s]   = srcData[s];
         rp[s+1] = srcData[s+1];
         rp[s+2] = srcData[s+2];
-        rp[s+3] = (removeMask[i] && !keepMask[i]) ? 0 : srcData[s+3];
+        rp[s+3] = Math.round(softMask[i] * srcData[s+3]);
     }
     ctx.putImageData(result, 0, 0);
     pushHistory();
@@ -10314,16 +10649,95 @@ function bgrApplyFinal() {
     bgrClose();
 }
 
+// ---- Smart Select: MediaPipe Interactive Segmenter ("Magic Touch") ----
+// Lazy-loaded on first use only (~17MB of WASM runtime + model), exactly like
+// Plotly's loadPlotly() above — never downloaded on normal page load. Click a
+// subject and it segments instantly via ML, regardless of object category;
+// the existing manual brushes still work afterward to fix any mistake. If the
+// model fails to load (offline, unsupported browser, etc.) Smart Select just
+// reports the error and leaves the manual tools fully working.
+const MEDIAPIPE_VISION_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35";
+const MAGIC_TOUCH_MODEL_URL = "https://storage.googleapis.com/mediapipe-models/interactive_segmenter/magic_touch/float32/1/magic_touch.tflite";
+let _interactiveSegmenterPromise = null;
+function loadInteractiveSegmenter() {
+    if (!_interactiveSegmenterPromise) {
+        _interactiveSegmenterPromise = (async () => {
+            const { FilesetResolver, InteractiveSegmenter } = await import(MEDIAPIPE_VISION_BASE + "/vision_bundle.mjs");
+            const wasmFileset = await FilesetResolver.forVisionTasks(MEDIAPIPE_VISION_BASE + "/wasm");
+            return await InteractiveSegmenter.createFromOptions(wasmFileset, {
+                baseOptions: { modelAssetPath: MAGIC_TOUCH_MODEL_URL },
+                outputConfidenceMasks: true,
+            });
+        })();
+    }
+    return _interactiveSegmenterPromise;
+}
+
+async function bgrSmartSelect(canvasX, canvasY) {
+    if (!bgrSession) return;
+    const { W, H, offscreenCanvas, removeMask, keepMask } = bgrSession;
+    const statusEl = document.getElementById("bgrSmartStatus");
+    const alreadyLoaded = !!_interactiveSegmenterPromise;
+    if (!alreadyLoaded) statusEl.textContent = "Loading AI model…";
+    try {
+        const segmenter = await loadInteractiveSegmenter();
+        if (!bgrSession) return; // modal closed while the model was loading
+        statusEl.textContent = "";
+        const result = segmenter.segment(offscreenCanvas, {
+            keypoint: { x: canvasX / W, y: canvasY / H }
+        });
+        const mask = result.confidenceMasks && result.confidenceMasks[0];
+        if (!mask) { statusEl.textContent = "No result — try a different point."; return; }
+        const conf = mask.getAsFloat32Array();
+        // The mask is normally returned at the same resolution as the input
+        // image, but sample defensively in case a future model differs.
+        const mw = mask.width, mh = mask.height;
+        for (let y = 0; y < H; y++) {
+            const my = Math.min(mh - 1, Math.floor(y * mh / H));
+            for (let x = 0; x < W; x++) {
+                const mx = Math.min(mw - 1, Math.floor(x * mw / W));
+                const i = y * W + x;
+                const fg = conf[my * mw + mx] > 0.5;
+                removeMask[i] = fg ? 0 : 1;
+                keepMask[i]   = fg ? 1 : 0;
+            }
+        }
+        result.close();
+        bgrRender();
+    } catch (err) {
+        statusEl.textContent = "AI selection unavailable — use the brush tools instead.";
+        console.error("Smart Select failed:", err);
+    }
+}
+
+document.getElementById("bgrSmartSelectBtn").addEventListener("click", () => {
+    if (!bgrSession) return;
+    bgrSession.tool = "smart";
+    document.getElementById("bgrSmartSelectBtn").classList.add("active");
+    document.getElementById("bgrMarkRemoveBtn").classList.remove("active");
+    document.getElementById("bgrMarkKeepBtn").classList.remove("active");
+    // Start loading immediately on tool selection, not on first click, so the
+    // model is more likely to be ready by the time the user clicks the canvas.
+    if (!_interactiveSegmenterPromise) {
+        document.getElementById("bgrSmartStatus").textContent = "Loading AI model…";
+        loadInteractiveSegmenter()
+            .then(() => { if (bgrSession && bgrSession.tool === "smart") document.getElementById("bgrSmartStatus").textContent = "Ready — click the subject"; })
+            .catch(() => { document.getElementById("bgrSmartStatus").textContent = "AI selection unavailable — use the brush tools instead."; });
+    }
+});
+
 // Tool button wiring
 document.getElementById("bgrMarkRemoveBtn").addEventListener("click", () => {
     if (!bgrSession) return;
     bgrSession.tool = "remove";
+    document.getElementById("bgrSmartSelectBtn").classList.remove("active");
     document.getElementById("bgrMarkRemoveBtn").classList.add("active");
     document.getElementById("bgrMarkKeepBtn").classList.remove("active");
 });
 document.getElementById("bgrMarkKeepBtn").addEventListener("click", () => {
     if (!bgrSession) return;
     bgrSession.tool = "keep";
+    document.getElementById("bgrSmartSelectBtn").classList.remove("active");
     document.getElementById("bgrMarkKeepBtn").classList.add("active");
     document.getElementById("bgrMarkRemoveBtn").classList.remove("active");
 });
@@ -10331,6 +10745,11 @@ document.getElementById("bgrBrushSlider").addEventListener("input", e => {
     if (!bgrSession) return;
     bgrSession.brushSize = parseInt(e.target.value);
     document.getElementById("bgrBrushSizeLabel").textContent = e.target.value;
+});
+document.getElementById("bgrFeatherSlider").addEventListener("input", e => {
+    if (!bgrSession) return;
+    bgrSession.feather = parseInt(e.target.value);
+    document.getElementById("bgrFeatherLabel").textContent = e.target.value;
 });
 document.getElementById("bgrDiscardBtn").addEventListener("click", () => {
     if (!bgrSession) return;
@@ -10357,16 +10776,20 @@ document.getElementById("bgrKeepBtn").addEventListener("click", bgrApplyFinal);
     canvas.addEventListener("mousedown", e => {
         if (!bgrSession) return;
         e.preventDefault();
+        const [x, y] = toCanvas(e);
+        if (bgrSession.tool === "smart") {
+            bgrSmartSelect(x, y); // single click, not a brush drag
+            return;
+        }
         bgrSession.mouseDown = true;
         bgrSession.lastX = bgrSession.lastY = -1;
-        const [x, y] = toCanvas(e);
         bgrApplyStroke(x, y);
         bgrRender(x, y);
     });
     canvas.addEventListener("mousemove", e => {
         if (!bgrSession) return;
         const [x, y] = toCanvas(e);
-        if (bgrSession.mouseDown) bgrApplyStroke(x, y);
+        if (bgrSession.mouseDown && bgrSession.tool !== "smart") bgrApplyStroke(x, y);
         bgrRender(x, y);
     });
     canvas.addEventListener("mouseup", () => {
@@ -11224,11 +11647,20 @@ function buildSlideSvgString(slide, slideIndex = state.current) {
     return new XMLSerializer().serializeToString(wrapper);
 }
 
-function exportPdf() {
+async function exportPdf() {
     let printArea = document.getElementById("printArea");
     if (printArea) printArea.remove();
     let pageStyle = document.getElementById("printPageStyle");
     if (pageStyle) pageStyle.remove();
+
+    // Make sure every picture's real-pixel adjustments (white balance, tone,
+    // clarity, vibrance, noise reduction) are fully baked into the cached
+    // bitmap before export — getProcessedImageSrc() normally debounces that
+    // work and can return a stale/unprocessed fallback while it settles,
+    // which is fine for live dragging but would silently drop the edit from
+    // the exported PDF otherwise.
+    showStatus("Preparing images for export…");
+    await ensureImagesProcessed();
 
     // Match the PDF page size & orientation to the slide's actual dimensions,
     // so non-default slide sizes (A4, Letter, portrait, custom, etc.) export correctly.
@@ -11260,9 +11692,7 @@ document.getElementById("spellcheckToggle").addEventListener("change", (e) => {
 
 // ============ Spell Check — full-document dialog ============
 (function () {
-    let scQueue = [];   // [{slideIdx, obj, errors:[{word,context}]}]
-    let scPos = 0;      // current error index
-    let changeAllMap = {}; // word → replacement
+    let scQueue = [];   // [{slideIdx, obj, errors:[{word,context}]}] — scQueue[0] is always "current"
 
     const modal      = document.getElementById('scModal');
     const ctxBox     = document.getElementById('scContextBox');
@@ -11271,7 +11701,6 @@ document.getElementById("spellcheckToggle").addEventListener("change", (e) => {
     const statusEl   = document.getElementById('scStatus');
 
     function open() {
-        changeAllMap = {};
         scQueue = [];
         // Collect errors from every slide
         for (let si = 0; si < state.slides.length; si++) {
@@ -11281,45 +11710,76 @@ document.getElementById("spellcheckToggle").addEventListener("change", (e) => {
                 if (errors.length) scQueue.push({ slideIdx: si, obj, errors });
             }
         }
-        scPos = 0;
         if (!scQueue.length) { setStatus('No spelling errors found.'); modal.style.display = 'flex'; return; }
         setStatus('');
         modal.style.display = 'flex';
         showCurrent();
     }
 
+    // Drop any entries that have run out of errors. Must run after every
+    // bulk mutation so scQueue[0] is always the entry currently on screen.
+    function pruneEmpty() {
+        scQueue = scQueue.filter(e => e.errors.length > 0);
+    }
+
     function showCurrent() {
-        if (scPos >= scQueue.length) {
-            ctxBox.innerHTML = '';
-            suggList.innerHTML = '';
+        if (!scQueue.length) {
+            ctxBox.textContent = '';
+            suggList.textContent = '';
             replInput.value = '';
             setStatus('Spell check complete.');
             return;
         }
-        const entry = scQueue[scPos];
+        const entry = scQueue[0];
         const err   = entry.errors[0]; // one error at a time from this object
         const ctx   = err.context || err.word;
-        const hi    = ctx.replace(new RegExp('(?<![a-zA-Z])' + escapeRe(err.word) + '(?![a-zA-Z])', 'gi'),
-                        m => `<span class="sc-highlight">${m}</span>`);
-        ctxBox.innerHTML = hi;
+        renderContext(ctx, err.word);
         replInput.value  = err.word;
 
         const suggs = SC.suggest(err.word);
+        suggList.textContent = '';
         if (suggs.length) {
-            suggList.innerHTML = suggs.map((s,i) =>
-                `<li data-s="${s}" class="${i===0?'sc-sugg-selected':''}">${s}</li>`).join('');
+            suggs.forEach((s, i) => {
+                const li = document.createElement('li');
+                li.dataset.s = s;
+                if (i === 0) li.className = 'sc-sugg-selected';
+                li.textContent = s;
+                suggList.appendChild(li);
+            });
             if (suggs[0]) replInput.value = suggs[0];
         } else {
-            suggList.innerHTML = '<li class="sc-sugg-empty">No suggestions</li>';
+            const li = document.createElement('li');
+            li.className = 'sc-sugg-empty';
+            li.textContent = 'No suggestions';
+            suggList.appendChild(li);
         }
+    }
+
+    // Render `ctx` into ctxBox as text, wrapping any whole-word match of
+    // `word` in a highlight <span> — built via DOM nodes (not innerHTML) so
+    // slide text containing <, >, or & displays literally instead of being
+    // parsed as markup.
+    function renderContext(ctx, word) {
+        ctxBox.textContent = '';
+        const re = new RegExp('(?<![a-zA-Z])' + escapeRe(word) + '(?![a-zA-Z])', 'gi');
+        let cursor = 0, m;
+        while ((m = re.exec(ctx)) !== null) {
+            if (m.index > cursor) ctxBox.appendChild(document.createTextNode(ctx.slice(cursor, m.index)));
+            const span = document.createElement('span');
+            span.className = 'sc-highlight';
+            span.textContent = m[0];
+            ctxBox.appendChild(span);
+            cursor = m.index + m[0].length;
+        }
+        if (cursor < ctx.length) ctxBox.appendChild(document.createTextNode(ctx.slice(cursor)));
     }
 
     function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g,'\\$&'); }
 
     function advanceError() {
-        const entry = scQueue[scPos];
-        entry.errors.shift();
-        if (!entry.errors.length) scPos++;
+        if (!scQueue.length) { showCurrent(); return; }
+        scQueue[0].errors.shift();
+        pruneEmpty();
         showCurrent();
     }
 
@@ -11330,26 +11790,28 @@ document.getElementById("spellcheckToggle").addEventListener("change", (e) => {
     }
 
     function applyChange(all) {
-        if (scPos >= scQueue.length) return;
-        const entry  = scQueue[scPos];
+        if (!scQueue.length) return;
+        const entry  = scQueue[0];
         const err    = entry.errors[0];
         const newVal = replInput.value.trim();
         if (!newVal) return;
         replaceInObj(entry.obj, err.word, newVal);
-        if (all) {
-            changeAllMap[err.word.toLowerCase()] = newVal;
-            // Also replace in any later objects
-            for (let i = scPos + 1; i < scQueue.length; i++) {
-                replaceInObj(scQueue[i].obj, err.word, newVal);
-                scQueue[i].errors = scQueue[i].errors.filter(e => e.word.toLowerCase() !== err.word.toLowerCase());
-            }
+        if (!all) {
+            render();
+            advanceError();
+            return;
         }
-        // Remove this error from all remaining appearances if all=true
-        if (all) {
-            scQueue.forEach(e => { e.errors = e.errors.filter(x => x.word.toLowerCase() !== err.word.toLowerCase()); });
+        // Change All: replace in every object that has this word queued, and
+        // drop it from every error list (including the current entry's) in
+        // one pass, then re-show whatever is left — no manual shift(), so
+        // a second distinct error in the same object is never skipped.
+        for (const e of scQueue) {
+            if (e !== entry) replaceInObj(e.obj, err.word, newVal);
+            e.errors = e.errors.filter(x => x.word.toLowerCase() !== err.word.toLowerCase());
         }
+        pruneEmpty();
         render();
-        advanceError();
+        showCurrent();
     }
 
     function setStatus(msg) { statusEl.textContent = msg; }
@@ -11367,29 +11829,28 @@ document.getElementById("spellcheckToggle").addEventListener("change", (e) => {
     document.getElementById('scChangeAllBtn').onclick = () => applyChange(true);
 
     document.getElementById('scIgnoreBtn').onclick = () => {
-        if (scPos >= scQueue.length) return;
+        if (!scQueue.length) return;
         advanceError();
     };
 
     document.getElementById('scIgnoreAllBtn').onclick = () => {
-        if (scPos >= scQueue.length) return;
-        const word = scQueue[scPos].errors[0]?.word;
+        if (!scQueue.length) return;
+        const word = scQueue[0].errors[0]?.word;
         if (word) {
             SC.ignoreWord(word);
             scQueue.forEach(e => { e.errors = e.errors.filter(x => x.word.toLowerCase() !== word.toLowerCase()); });
-            // Remove empty entries
-            scQueue = scQueue.filter(e => e.errors.length > 0);
+            pruneEmpty();
             showCurrent();
         }
     };
 
     document.getElementById('scAddBtn').onclick = () => {
-        if (scPos >= scQueue.length) return;
-        const word = scQueue[scPos].errors[0]?.word;
+        if (!scQueue.length) return;
+        const word = scQueue[0].errors[0]?.word;
         if (word) {
             SC.addToCustom(word);
             scQueue.forEach(e => { e.errors = e.errors.filter(x => x.word.toLowerCase() !== word.toLowerCase()); });
-            scQueue = scQueue.filter(e => e.errors.length > 0);
+            pruneEmpty();
             showCurrent();
         }
     };
@@ -13960,7 +14421,16 @@ function _dictRender(phonetics, audioUrl, posBlocks) {
 
 function _dictError(word) {
     const bodyEl = document.getElementById("dictBody");
-    if (bodyEl) bodyEl.innerHTML = "<div class=\"dict-error\">No definition found for <strong>" + word + "</strong>.</div>";
+    if (!bodyEl) return;
+    bodyEl.textContent = "";
+    const div = document.createElement("div");
+    div.className = "dict-error";
+    div.appendChild(document.createTextNode("No definition found for "));
+    const strong = document.createElement("strong");
+    strong.textContent = word;
+    div.appendChild(strong);
+    div.appendChild(document.createTextNode("."));
+    bodyEl.appendChild(div);
 }
 
 // Strip HTML tags from a string (for Wiktionary response cleaning).
