@@ -1496,9 +1496,34 @@ function buildInkOutlinePath(points, widthFn, capStyle) {
     const startR = Math.max(0.1, widthFn(0, points[0], points)) / 2;
     const startCap = capArc(points[0], startTheta - Math.PI / 2, startTheta - Math.PI * 1.5, startR);
 
-    const outline = [...left, ...endCap, ...right.slice().reverse(), ...startCap];
-    let d = `M ${outline[0].x} ${outline[0].y}`;
-    for (let i = 1; i < outline.length; i++) d += ` L ${outline[i].x} ${outline[i].y}`;
+    // Smooths a polyline into quadratic-bezier-through-midpoints segments —
+    // the standard trick for turning a dense point sample into a fluid
+    // curve instead of a visibly faceted polygon, which is most of what
+    // separates "vector outline of sample points" from "real handwriting."
+    // Assumes the pen is already positioned at pts[0] before this is called.
+    const smoothSegment = (pts) => {
+        const m = pts.length;
+        if (m <= 1) return "";
+        if (m === 2) return ` L ${pts[1].x} ${pts[1].y}`;
+        let s = "";
+        for (let i = 0; i < m - 1; i++) {
+            if (i + 2 < m) {
+                const midX = (pts[i + 1].x + pts[i + 2].x) / 2;
+                const midY = (pts[i + 1].y + pts[i + 2].y) / 2;
+                s += ` Q ${pts[i + 1].x} ${pts[i + 1].y} ${midX} ${midY}`;
+            } else {
+                s += ` L ${pts[i + 1].x} ${pts[i + 1].y}`;
+            }
+        }
+        return s;
+    };
+
+    let d = `M ${left[0].x} ${left[0].y}`;
+    d += smoothSegment(left);
+    for (const c of endCap) d += ` L ${c.x} ${c.y}`;
+    d += ` L ${right[n - 1].x} ${right[n - 1].y}`;
+    d += smoothSegment(right.slice().reverse());
+    for (const c of startCap) d += ` L ${c.x} ${c.y}`;
     d += " Z";
     return d;
 }
@@ -1662,7 +1687,11 @@ function finishInkStroke() {
     }
 
     curSlide().objects.push(obj);
-    state.selection = [obj.id];
+    // Deliberately not selected — a visible selection box/handles around
+    // every stroke the moment it's finished would be distracting clutter
+    // while writing (no real handwriting app does this); switch to the
+    // Select tool and tap a stroke to select it for editing afterward.
+    state.selection = [];
     inkDraw = null;
     // Deliberately do NOT setTool("select") — continuous multi-stroke
     // drawing is the point of a pen tool, unlike freeform's one-shot path.
@@ -6811,6 +6840,27 @@ function svgPoint(e) {
 
 let drag = null; // current drag operation
 let lastClick = null; // for manual double-click detection on shapes
+let touchPanState = null; // active touch-to-pan gesture (see pointerdown below)
+const TOUCH_PAN_THRESHOLD = 4;
+let touchLongPressTimer = null;
+
+// Touch's equivalent of the desktop right-click menu (Cut/Copy/Paste/
+// Duplicate/Delete) — fired on long-press since iPadOS has no right-click.
+function triggerTouchContextMenu(clientX, clientY, target) {
+    closeTextContextMenu();
+    const fakeEvent = { clientX, clientY, target, preventDefault() {}, stopPropagation() {} };
+    const shapeEl = target.closest && target.closest(".shape-el");
+    if (shapeEl) {
+        const id = shapeEl.dataset.id;
+        if (!state.selection.includes(id)) {
+            state.selection = [id];
+            render(); renderProperties();
+        }
+        showShapeContextMenu(fakeEvent, true);
+    } else {
+        showShapeContextMenu(fakeEvent, state.selection.length > 0);
+    }
+}
 
 // ---- Border paint tool state ----
 const borderPaintState = { active: false, color: "#000000", width: 2, dash: "solid" };
@@ -6845,6 +6895,30 @@ function updateBorderPaintOverlay() {
 }
 
 svg.addEventListener("pointerdown", (e) => {
+    // A resting palm/finger never manipulates content directly — any touch
+    // drag pans the canvas instead, regardless of which tool is active or
+    // what's underneath it (the Apple Pencil/mouse keep full normal
+    // behavior). Recorded here unconditionally; pointermove decides once
+    // movement crosses a small threshold whether this turns into a pan or
+    // stays a simple tap (tap-to-select keeps working exactly as before).
+    if (e.pointerType === "touch") {
+        touchPanState = {
+            startClientX: e.clientX, startClientY: e.clientY,
+            scrollLeft: canvasArea.scrollLeft, scrollTop: canvasArea.scrollTop,
+            moved: false,
+        };
+        // Long-press is touch's equivalent of right-click — there's no
+        // other way to reach Cut/Copy/Paste/Duplicate/Delete on an iPad.
+        // Cancelled below the moment the touch turns into a pan or lifts.
+        const cx = e.clientX, cy = e.clientY, target = e.target;
+        clearTimeout(touchLongPressTimer);
+        touchLongPressTimer = setTimeout(() => {
+            touchLongPressTimer = null;
+            touchPanState = null;
+            triggerTouchContextMenu(cx, cy, target);
+        }, 500);
+    }
+
     const pt = svgPoint(e);
     const target = e.target;
 
@@ -7321,6 +7395,23 @@ function drawAlignmentGuides(guides) {
 }
 
 window.addEventListener("pointermove", (e) => {
+    // Touch-to-pan takes priority over everything else once the finger has
+    // actually moved — content (move/resize/rotate/draw/ink) never reacts
+    // to a touch drag, only the canvas scroll position does. Below the
+    // threshold (effectively a tap-in-progress) nothing here fires yet, so
+    // tap-to-select on pointerup still works exactly as before.
+    if (touchPanState && e.pointerType === "touch") {
+        const dx = e.clientX - touchPanState.startClientX;
+        const dy = e.clientY - touchPanState.startClientY;
+        if (touchPanState.moved || Math.hypot(dx, dy) >= TOUCH_PAN_THRESHOLD) {
+            clearTimeout(touchLongPressTimer); // real movement — not a long-press
+            touchPanState.moved = true;
+            canvasArea.scrollLeft = touchPanState.scrollLeft - dx;
+            canvasArea.scrollTop = touchPanState.scrollTop - dy;
+            return;
+        }
+    }
+
     // Border paint hover: update highlighted border segment (even without a drag)
     if (borderPaintState.active) {
         const tableId = state.selection.length === 1 ? state.selection[0] : null;
@@ -7593,6 +7684,23 @@ window.addEventListener("pointermove", (e) => {
 });
 
 window.addEventListener("pointerup", (e) => {
+    if (touchPanState) {
+        clearTimeout(touchLongPressTimer); // lifted before the long-press fired
+        const wasPanning = touchPanState.moved;
+        touchPanState = null;
+        if (wasPanning) {
+            // The touch never should have started any content drag, but
+            // clear defensively in case pointerdown's normal selection path
+            // also set one up (e.g. tapping a shape's body) before this
+            // gesture grew into a pan.
+            drag = null;
+            if (inkDraw) { const elp = svg.querySelector("#ink-preview"); if (elp) elp.remove(); inkDraw = null; }
+            return;
+        }
+        // Otherwise this was a simple tap (never crossed the pan
+        // threshold) — fall through to the normal handling below exactly
+        // as before, so tap-to-select keeps working.
+    }
     // Crop mode: end drag
     if (cropState && cropState.edge) {
         cropState.edge = null;
