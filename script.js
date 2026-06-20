@@ -15343,6 +15343,40 @@ propsToggleBtn.onclick = () => {
     }
 };
 
+// ============ Slides panel collapse ============
+// Same mechanism as the properties panel above, mirrored since this panel
+// sits on the opposite (left) side of the workspace.
+const slidesToggleBtn = document.getElementById("slidesToggleBtn");
+const slidesPanelEl = document.getElementById("slidesPanel");
+let slidesLastWidth = "";
+slidesToggleBtn.onclick = () => {
+    const collapsed = slidesPanelEl.classList.toggle("collapsed");
+    if (collapsed) {
+        slidesLastWidth = slidesPanelEl.style.width;
+        slidesToggleBtn.innerHTML = "&#9656;";
+        slidesToggleBtn.title = "Expand panel";
+    } else {
+        slidesPanelEl.style.width = slidesLastWidth;
+        slidesToggleBtn.innerHTML = "&#9666;";
+        slidesToggleBtn.title = "Collapse panel";
+    }
+};
+
+// On phone-width screens, both side panels default to collapsed so the
+// canvas actually gets usable space — still fully expandable via either
+// toggle button above, exactly as on desktop, this just changes the
+// starting point. Re-applied if the viewport is resized into phone range
+// (e.g. a real device rotation that crosses it), but never force-expands
+// when leaving phone range, so it can't clobber a choice made while there.
+const mobileLayoutQuery = window.matchMedia("(max-width: 700px)");
+function applyMobilePanelDefaults() {
+    if (!mobileLayoutQuery.matches) return;
+    if (!slidesPanelEl.classList.contains("collapsed")) slidesToggleBtn.click();
+    if (!propertiesPanelEl.classList.contains("collapsed")) propsToggleBtn.click();
+}
+applyMobilePanelDefaults();
+mobileLayoutQuery.addEventListener("change", (e) => { if (e.matches) applyMobilePanelDefaults(); });
+
 // ============ TEMP: header color picker ============
 function hexToHsl(hex) {
     const r = parseInt(hex.slice(1, 3), 16) / 255;

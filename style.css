@@ -1579,6 +1579,13 @@ body {
     border: none;
     overflow: hidden;
 }
+.slides-panel.collapsed {
+    width: 0 !important;
+    min-width: 0;
+    padding: 0;
+    border: none;
+    overflow: hidden;
+}
 
 /* ---------- Slides panel ---------- */
 .slides-panel {
@@ -4508,4 +4515,34 @@ body {
     color: #b0362a;
     padding: 2rem;
     font-size: 0.95rem;
+}
+
+/* ===== Mobile (phone-width) layout =====
+   Desktop/tablet layouts (anything above this breakpoint) are completely
+   unaffected — every rule here is scoped behind the media query. The goal
+   is "every feature stays reachable", not a visual redesign: bars that used
+   to clip content now scroll horizontally instead, and the two side panels
+   default to collapsed (still toggleable) so the canvas gets real space. */
+@media (max-width: 700px) {
+    .app-header h1 { flex-shrink: 0; }
+    .header-actions {
+        min-width: 0;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+    }
+    .header-actions > * { flex-shrink: 0; }
+
+    .ribbon-tabbar {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+    }
+    .ribbon-tab { flex-shrink: 0; }
+
+    .status-bar {
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+    .sb-cluster { flex-shrink: 0; }
 }
