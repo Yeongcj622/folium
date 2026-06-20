@@ -562,6 +562,11 @@
       <path d="M14 3 20 9 11 18 6 18 6 13Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
       <path d="M6 13 11 18 9 21 4 21 4 16Z" fill="currentColor" fill-opacity="0.35" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
     </symbol>
+    <symbol id="icon-eraser" viewBox="0 0 24 24">
+      <path d="M4 16.5 13.5 7a2 2 0 0 1 2.8 0l3.7 3.7a2 2 0 0 1 0 2.8L11.5 22H7Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+      <path d="M9 11.5 15.5 18" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M4 16.5 7 22" stroke="currentColor" stroke-width="1.8"/>
+    </symbol>
     <symbol id="icon-header-footer" viewBox="0 0 24 24">
       <rect x="3" y="3" width="18" height="18" rx="1.3"/>
       <rect x="3" y="3" width="18" height="4" fill="currentColor" fill-opacity="0.18" stroke="none"/>
@@ -862,7 +867,7 @@
 <header class="app-header">
     <h1><img src="header-logo.svg" alt="Folium" class="header-logo-img"></h1>
     <div class="header-actions">
-        <input type="color" id="headerColorPicker" title="Theme color" value="#65c8d6">
+        <span id="headerColorPicker" title="Theme color"></span>
         <button id="undoBtn" class="icon-btn" title="Undo (Ctrl+Z)"><svg class="hdr-icon"><use href="#icon-undo"/></svg></button>
         <button id="redoBtn" class="icon-btn" title="Redo (Ctrl+Y)"><svg class="hdr-icon"><use href="#icon-redo"/></svg></button>
         <div class="hdr-divider"></div>
@@ -1180,16 +1185,7 @@
                         <p class="empty-msg small" id="myShapesEmptyMsg">No saved shapes yet. Select a shape or group and use "Save as My Shape" in the Edit Shape tab.</p>
                     </div>
                 </div>
-                <div class="ribbon-dropdown">
-                    <button class="ribbon-dropdown-toggle ribbon-btn-large" id="smartArtDropdownBtn" title="Insert SmartArt"><span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-smartart"/></svg></span><span class="ribbon-label">SmartArt &#9662;</span></button>
-                    <div class="ribbon-dropdown-menu" id="smartArtDropdownMenu">
-                        <button data-smartart="process" title="Process">&#10238; Process</button>
-                        <button data-smartart="cycle" title="Cycle">&#10227; Cycle</button>
-                        <button data-smartart="pyramid" title="Pyramid">&#9650; Pyramid</button>
-                        <button data-smartart="list" title="List">&#9776; List</button>
-                        <button data-smartart="hierarchy" title="Hierarchy">&#9874; Hierarchy</button>
-                    </div>
-                </div>
+                <button class="ribbon-btn-large" id="smartArtDropdownBtn" title="Insert SmartArt"><span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-smartart"/></svg></span><span class="ribbon-label">SmartArt</span></button>
                 <button class="ribbon-btn-large" id="chartBtn" title="Insert Chart"><span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-chart"/></svg></span><span class="ribbon-label">Chart</span></button>
                 <div class="ribbon-dropdown">
                     <button class="ribbon-dropdown-toggle ribbon-btn-large" id="iconsDropdownBtn" title="Insert Icon"><span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-icons"/></svg></span><span class="ribbon-label">Icons &#9662;</span></button>
@@ -1345,7 +1341,7 @@
                             <rect x="0" y="15.5" width="18" height="2.5" rx="1.25" fill="currentColor"/>
                         </svg>
                         <span class="fxp-lbl">Color</span>
-                        <input type="color" id="txTextColorInput" class="fxp-color-input" title="Text color">
+                        <span id="txTextColorInput" class="fxp-color-input" title="Text color"></span>
                     </div>
                     <div class="fxp-row">
                         <svg class="fxp-ico" viewBox="0 0 18 18" width="15" height="15">
@@ -1371,7 +1367,7 @@
                             <input type="checkbox" id="txOutlineEnable">
                             <span class="fxp-tgl-track"><span class="fxp-tgl-knob"></span></span>
                         </label>
-                        <input type="color" id="txOutlineColor" class="fxp-color-input" title="Outline color">
+                        <span id="txOutlineColor" class="fxp-color-input" title="Outline color"></span>
                     </div>
                     <div class="fxp-card-bd">
                         <div class="fxp-row">
@@ -1396,7 +1392,7 @@
                             <input type="checkbox" id="txShadowEnable">
                             <span class="fxp-tgl-track"><span class="fxp-tgl-knob"></span></span>
                         </label>
-                        <input type="color" id="txShadowColor" class="fxp-color-input" title="Shadow color">
+                        <span id="txShadowColor" class="fxp-color-input" title="Shadow color"></span>
                     </div>
                     <div class="fxp-card-bd fxp-2col">
                         <div class="fxp-row">
@@ -1436,7 +1432,7 @@
                             <input type="checkbox" id="txGlowEnable">
                             <span class="fxp-tgl-track"><span class="fxp-tgl-knob"></span></span>
                         </label>
-                        <input type="color" id="txGlowColor" class="fxp-color-input" title="Glow color">
+                        <span id="txGlowColor" class="fxp-color-input" title="Glow color"></span>
                     </div>
                     <div class="fxp-card-bd">
                         <div class="fxp-row">
@@ -1560,7 +1556,7 @@
         </div>
         <div class="pic-adj-row">
             <label>Color</label>
-            <input type="color" id="sfShadowColor" value="#000000">
+            <span id="sfShadowColor"></span>
         </div>
         <div class="pic-adj-row">
             <label>Blur</label>
@@ -1589,7 +1585,7 @@
         </div>
         <div class="pic-adj-row">
             <label>Color</label>
-            <input type="color" id="sfInnerShadowColor" value="#000000">
+            <span id="sfInnerShadowColor"></span>
         </div>
         <div class="pic-adj-row">
             <label>Blur</label>
@@ -1620,7 +1616,7 @@
         </div>
         <div class="pic-adj-row">
             <label>Color</label>
-            <input type="color" id="sfGlowColor" value="#65c8d6">
+            <span id="sfGlowColor"></span>
         </div>
         <div class="pic-adj-row">
             <label>Size</label>
@@ -1881,7 +1877,7 @@
                     </button>
                     <div class="ribbon-dropdown-menu pic-adj-menu" id="picBorderMenu" style="display:none">
                         <div class="pic-adj-section">Border Color</div>
-                        <div class="pic-adj-row"><label>Color</label><input type="color" id="picBorderColorInput" value="#000000"></div>
+                        <div class="pic-adj-row"><label>Color</label><span id="picBorderColorInput"></span></div>
                         <div class="pic-adj-section">Weight</div>
                         <div class="pic-adj-row"><label>Width</label><input type="range" id="picBorderWidthSlider" min="0" max="12" step="0.5" value="0"><span id="picBorderWidthVal">0px</span></div>
                         <div class="pic-adj-section">Dashes</div>
@@ -1903,17 +1899,17 @@
                         <div class="pic-adj-row"><label>Size</label><input type="range" id="picSoftEdgeSize" min="1" max="50" step="1" value="10"><span id="picSoftEdgeSizeVal">10</span></div>
                         <div class="pic-adj-section">Shadow</div>
                         <div class="pic-adj-row"><label>Enable</label><input type="checkbox" id="picShadowEnable"></div>
-                        <div class="pic-adj-row"><label>Color</label><input type="color" id="picShadowColor" value="#000000"></div>
+                        <div class="pic-adj-row"><label>Color</label><span id="picShadowColor"></span></div>
                         <div class="pic-adj-row"><label>Blur</label><input type="range" id="picShadowBlur" min="0" max="30" step="1" value="8"><span id="picShadowBlurVal">8</span></div>
                         <div class="pic-adj-row"><label>Dist</label><input type="range" id="picShadowDist" min="0" max="30" step="1" value="4"><span id="picShadowDistVal">4</span></div>
                         <div class="pic-adj-section" style="margin-top:6px;">Inner Shadow</div>
                         <div class="pic-adj-row"><label>Enable</label><input type="checkbox" id="picInnerShadowEnable"></div>
-                        <div class="pic-adj-row"><label>Color</label><input type="color" id="picInnerShadowColor" value="#000000"></div>
+                        <div class="pic-adj-row"><label>Color</label><span id="picInnerShadowColor"></span></div>
                         <div class="pic-adj-row"><label>Blur</label><input type="range" id="picInnerShadowBlur" min="0" max="20" step="1" value="4"><span id="picInnerShadowBlurVal">4</span></div>
                         <div class="pic-adj-row"><label>Dist</label><input type="range" id="picInnerShadowDist" min="0" max="30" step="1" value="4"><span id="picInnerShadowDistVal">4</span></div>
                         <div class="pic-adj-section">Glow</div>
                         <div class="pic-adj-row"><label>Enable</label><input type="checkbox" id="picGlowEnable"></div>
-                        <div class="pic-adj-row"><label>Color</label><input type="color" id="picGlowColor" value="#65c8d6"></div>
+                        <div class="pic-adj-row"><label>Color</label><span id="picGlowColor"></span></div>
                         <div class="pic-adj-row"><label>Size</label><input type="range" id="picGlowSize" min="0" max="30" step="1" value="6"><span id="picGlowSizeVal">6</span></div>
                         <div class="pic-adj-section">Reflection</div>
                         <div class="pic-adj-row"><label>Enable</label><input type="checkbox" id="picReflectionEnable"></div>
@@ -2396,6 +2392,10 @@
                     <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-pen-highlighter"/></svg></span>
                     <span class="ribbon-label">Highlighter</span>
                 </button>
+                <button class="tool-btn ribbon-btn-large" data-tool="ink-eraser" title="Eraser">
+                    <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-eraser"/></svg></span>
+                    <span class="ribbon-label">Eraser</span>
+                </button>
             </div>
             <div class="ribbon-group-label">Tools</div>
         </div>
@@ -2405,7 +2405,7 @@
                     <div class="fxp-card-hd">
                         <svg class="fxp-card-ico" viewBox="0 0 18 18"><use href="#fxi-thickness"/></svg>
                         <span class="fxp-card-ttl">Stroke</span>
-                        <input type="color" id="inkColorInput" class="fxp-color-input" title="Ink color" style="margin-left:auto">
+                        <span id="inkColorInput" class="fxp-color-input" title="Ink color" style="margin-left:auto"></span>
                     </div>
                     <div class="fxp-card-bd fxp-2col">
                         <div class="fxp-row">
@@ -2456,6 +2456,19 @@
                         </div>
                     </div>
                 </div>
+                <div class="fxp-card" id="inkEraserCard" style="display:none">
+                    <div class="fxp-card-hd">
+                        <svg class="fxp-card-ico" viewBox="0 0 24 24"><use href="#icon-eraser"/></svg>
+                        <span class="fxp-card-ttl">Eraser</span>
+                    </div>
+                    <div class="fxp-card-bd">
+                        <div class="fxp-row">
+                            <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Eraser Size"><use href="#fxi-thickness"/></svg>
+                            <input type="range" class="fxp-range" id="inkEraserSizeSlider" min="6" max="60" step="1" value="20">
+                            <span class="fxp-val" id="inkEraserSizeVal">20</span>
+                        </div>
+                    </div>
+                </div>
             </div>
             <div class="ribbon-group-label">Settings</div>
         </div>
@@ -2478,6 +2491,17 @@
       <button class="tpl-modal-close" id="templateModalClose">✕</button>
     </div>
     <div class="tpl-grid" id="templateGrid"></div>
+  </div>
+</div>
+
+<!-- SmartArt Gallery Modal -->
+<div id="smartArtModal" class="tpl-modal-overlay" style="display:none">
+  <div class="tpl-modal">
+    <div class="tpl-modal-header">
+      <span class="tpl-modal-title">Choose a SmartArt Graphic</span>
+      <button class="tpl-modal-close" id="smartArtModalClose">✕</button>
+    </div>
+    <div class="smartart-grid-scroll" id="smartArtGridScroll"></div>
   </div>
 </div>
 
@@ -2613,6 +2637,20 @@
                 <div class="plot-range-row">
                     <label class="plot-field"><span>y from</span><input type="text" id="plot3dYMin" value="-5"></label>
                     <label class="plot-field"><span>to</span><input type="text" id="plot3dYMax" value="5"></label>
+                </div>
+                <label class="plot-field">
+                    <span>Colours</span>
+                    <select id="plot3dColorScheme">
+                        <option value="rainbow" selected>Rainbow</option>
+                        <option value="ocean">Ocean Blue</option>
+                        <option value="sunset">Sunset</option>
+                        <option value="forest">Forest</option>
+                        <option value="custom">Custom…</option>
+                    </select>
+                </label>
+                <div class="plot-range-row" id="plot3dCustomColorRow" style="display:none">
+                    <label class="plot-field"><span>From</span><span id="plot3dColorStart"></span></label>
+                    <label class="plot-field"><span>To</span><span id="plot3dColorEnd"></span></label>
                 </div>
                 <label class="plot-checkbox"><input type="checkbox" id="plot3dDerivative" checked> Show derivatives (&part;z/&part;x, &part;z/&part;y)</label>
                 <div class="equation-preview" id="plot3dPreview"></div>

@@ -1698,6 +1698,52 @@ function finishInkStroke() {
     render(); renderProperties(); pushHistory();
 }
 
+// Whole-stroke eraser: any "ink" object whose path comes within the eraser's
+// radius (plus its own half-width, so thick strokes aren't harder to hit
+// than thin ones) gets removed entirely, GoodNotes/Notability-style — there
+// is no partial/segment erasing.
+let eraserDrag = false;
+function eraserRadiusPx() {
+    return parseFloat(document.getElementById("inkEraserSizeSlider").value || 20) / 2;
+}
+function eraseInkAt(pt) {
+    const r = eraserRadiusPx();
+    const objs = curSlide().objects;
+    let changed = false;
+    for (let i = objs.length - 1; i >= 0; i--) {
+        const obj = objs[i];
+        if (obj.type !== "ink") continue;
+        const hitR = r + ((obj.thicknessMm ?? 0.5) * PX_PER_MM) / 2;
+        const pts = obj.points || [];
+        const hit = pts.some(p => Math.hypot(pt.x - (obj.x + p.x * obj.w), pt.y - (obj.y + p.y * obj.h)) <= hitR);
+        if (hit) {
+            objs.splice(i, 1);
+            state.selection = state.selection.filter(id => id !== obj.id);
+            changed = true;
+        }
+    }
+    if (changed) { render(); renderProperties(); }
+}
+function renderEraserPreview(pt) {
+    let el = svg.querySelector("#eraser-preview");
+    if (!el) {
+        el = document.createElementNS(svgNS, "circle");
+        el.id = "eraser-preview";
+        el.setAttribute("pointer-events", "none");
+        el.setAttribute("fill", "rgba(255,255,255,0.25)");
+        el.setAttribute("stroke", "#1a1a1a");
+        el.setAttribute("stroke-width", "1");
+        svg.appendChild(el);
+    }
+    el.setAttribute("cx", pt.x);
+    el.setAttribute("cy", pt.y);
+    el.setAttribute("r", eraserRadiusPx());
+}
+function removeEraserPreview() {
+    const el = svg.querySelector("#eraser-preview");
+    if (el) el.remove();
+}
+
 // ---- Draw tab ribbon wiring: which settings cards show per tool, and
 // binding each slider/color input to that pen type's live defaults ----
 const INK_CARDS_FOR_PEN_TYPE = {
@@ -1707,11 +1753,11 @@ const INK_CARDS_FOR_PEN_TYPE = {
     fountain: ["inkStrokeCard", "inkFountainCard"],
     brush: ["inkStrokeCard", "inkBrushCard"],
 };
-const ALL_INK_CARD_IDS = ["inkStrokeCard", "inkFountainCard", "inkBrushCard"];
+const ALL_INK_CARD_IDS = ["inkStrokeCard", "inkFountainCard", "inkBrushCard", "inkEraserCard"];
 
 function seedInkSliders(penType) {
     const s = state.inkSettings[penType];
-    document.getElementById("inkColorInput").value = s.color;
+    inkColorBtn._setValue(s.color);
     document.getElementById("inkStabilizationSlider").value = s.stabilization;
     document.getElementById("inkStabilizationVal").textContent = s.stabilization;
     document.getElementById("inkThicknessSlider").value = s.thicknessMm;
@@ -1730,6 +1776,12 @@ function seedInkSliders(penType) {
 }
 
 function updateInkCardsForTool(tool) {
+    if (tool === "ink-eraser") {
+        ALL_INK_CARD_IDS.forEach(id => {
+            document.getElementById(id).style.display = id === "inkEraserCard" ? "" : "none";
+        });
+        return;
+    }
     const penType = INK_TOOL_TO_PEN_TYPE[tool];
     if (!penType) return;
     const visible = INK_CARDS_FOR_PEN_TYPE[penType] || [];
@@ -1740,14 +1792,19 @@ function updateInkCardsForTool(tool) {
 }
 
 document.querySelectorAll(".tool-btn[data-tool]").forEach(btn => {
-    if (INK_TOOL_TO_PEN_TYPE[btn.dataset.tool]) {
+    if (INK_TOOL_TO_PEN_TYPE[btn.dataset.tool] || btn.dataset.tool === "ink-eraser") {
         btn.addEventListener("click", () => updateInkCardsForTool(btn.dataset.tool));
     }
 });
 
+document.getElementById("inkEraserSizeSlider").addEventListener("input", (e) => {
+    document.getElementById("inkEraserSizeVal").textContent = e.target.value;
+});
+
 function curInkSettings() { return state.inkSettings[INK_TOOL_TO_PEN_TYPE[state.tool] || "ballpoint"]; }
 
-document.getElementById("inkColorInput").addEventListener("input", (e) => { curInkSettings().color = e.target.value; });
+const inkColorBtn = makeColorPickerBtn("#1a1a1a", c => { curInkSettings().color = c; });
+document.getElementById("inkColorInput").appendChild(inkColorBtn);
 document.getElementById("inkStabilizationSlider").addEventListener("input", (e) => {
     curInkSettings().stabilization = parseFloat(e.target.value);
     document.getElementById("inkStabilizationVal").textContent = e.target.value;
@@ -4547,6 +4604,112 @@ function smartArtProcess() {
     return { x: x0, y: y0, w: totalW, h: boxH, children };
 }
 
+// Edge-to-edge chevron arrows, each overlapping the one before it — the
+// classic PowerPoint "Process Arrows" look.
+function smartArtChevronProcess() {
+    const chevW = 150, chevH = 64, overlap = chevW * 0.35;
+    const labels = ["Step 1", "Step 2", "Step 3", "Step 4"];
+    const totalW = chevW + (labels.length - 1) * (chevW - overlap);
+    const x0 = (SLIDE_W - totalW) / 2, y0 = (SLIDE_H - chevH) / 2;
+    const children = labels.map((text, i) => {
+        const x = x0 + i * (chevW - overlap);
+        return smartArtLabelBox("chevron", x, y0, chevW, chevH, text, CHART_PALETTE[i % CHART_PALETTE.length], 15);
+    });
+    return { x: x0, y: y0, w: totalW, h: chevH, children };
+}
+
+// Basic process with an icon placeholder circle sitting above each step box.
+function smartArtPictureAccentProcess() {
+    const boxW = 130, boxH = 60, gap = 50, circleD = 46, vGap = 14;
+    const labels = ["Step 1", "Step 2", "Step 3"];
+    const totalW = boxW * labels.length + gap * (labels.length - 1);
+    const x0 = (SLIDE_W - totalW) / 2;
+    const y0 = (SLIDE_H - (circleD + vGap + boxH)) / 2;
+    const boxY = y0 + circleD + vGap;
+    const children = [];
+    labels.forEach((text, i) => {
+        const bx = x0 + i * (boxW + gap);
+        const circle = makeObject("ellipse", bx + boxW / 2 - circleD / 2, y0, circleD, circleD);
+        circle.fill = { type: "solid", color: CHART_PALETTE[i % CHART_PALETTE.length] };
+        circle.stroke = { color: "#ffffff", width: 3, dash: "solid" };
+        children.push(circle);
+        children.push(smartArtLabelBox("roundrect", bx, boxY, boxW, boxH, text, "#5b8bcf", 15));
+        if (i < labels.length - 1) children.push(makeObject("arrow", bx + boxW, boxY + boxH / 2, gap, 0));
+    });
+    return { x: x0, y: y0, w: totalW, h: circleD + vGap + boxH, children };
+}
+
+// Same idea as the basic process, stacked top-to-bottom with down-arrows
+// instead of laid out left-to-right.
+function smartArtVerticalProcess() {
+    const boxW = 280, boxH = 56, gap = 40;
+    const labels = ["Step 1", "Step 2", "Step 3"];
+    const totalH = boxH * labels.length + gap * (labels.length - 1);
+    const x0 = (SLIDE_W - boxW) / 2, y0 = (SLIDE_H - totalH) / 2;
+    const children = [];
+    labels.forEach((text, i) => {
+        const by = y0 + i * (boxH + gap);
+        children.push(smartArtLabelBox("roundrect", x0, by, boxW, boxH, text, CHART_PALETTE[i % CHART_PALETTE.length], 16));
+        if (i < labels.length - 1) children.push(makeObject("arrow", x0 + boxW / 2, by + boxH + gap, 0, -gap));
+    });
+    return { x: x0, y: y0, w: boxW, h: totalH, children };
+}
+
+// Steps alternate between a top row and a bottom row, joined by elbow
+// connectors — reads as a winding path rather than a straight line.
+function smartArtZigzagProcess() {
+    const boxW = 150, boxH = 64, gapX = 60, rowGap = 110;
+    const labels = ["Step 1", "Step 2", "Step 3", "Step 4"];
+    const totalW = boxW * labels.length + gapX * (labels.length - 1);
+    const x0 = (SLIDE_W - totalW) / 2;
+    const yTop = (SLIDE_H - rowGap - boxH) / 2;
+    const yBottom = yTop + rowGap;
+    const children = [];
+    const centers = [];
+    labels.forEach((text, i) => {
+        const bx = x0 + i * (boxW + gapX);
+        const row = i % 2;
+        const by = row === 0 ? yTop : yBottom;
+        children.push(smartArtLabelBox("roundrect", bx, by, boxW, boxH, text, CHART_PALETTE[i % CHART_PALETTE.length], 14));
+        centers.push({ cx: bx + boxW / 2, top: by, bottom: by + boxH, row });
+    });
+    for (let i = 0; i < centers.length - 1; i++) {
+        const a = centers[i], b = centers[i + 1];
+        const y1 = a.row === 0 ? a.bottom : a.top;
+        const y2 = b.row === 0 ? b.bottom : b.top;
+        const midX = (a.cx + b.cx) / 2;
+        children.push(smartArtConnector("line", a.cx, y1, midX, y1, "#888888", 2));
+        children.push(smartArtConnector("line", midX, y1, midX, y2, "#888888", 2));
+        children.push(smartArtConnector("arrow", midX, y2, b.cx, y2, "#888888", 2));
+    }
+    return { x: x0, y: yTop, w: totalW, h: rowGap + boxH, children };
+}
+
+// Trapezoids narrowing top-to-bottom — a staged funnel rather than a
+// left-to-right or top-to-bottom flow.
+function smartArtFunnelProcess() {
+    const labels = ["Awareness", "Interest", "Decision", "Action"];
+    const topW = 320, levelH = 56, gap = 4;
+    const totalH = labels.length * levelH + (labels.length - 1) * gap;
+    const x0 = (SLIDE_W - topW) / 2, y0 = (SLIDE_H - totalH) / 2;
+    const children = labels.map((text, i) => {
+        const w = topW * ((labels.length - i) / labels.length);
+        const x = x0 + (topW - w) / 2;
+        const y = y0 + i * (levelH + gap);
+        const seg = makeObject("trapezoid", x, y, w, levelH);
+        seg.rotation = 180;
+        seg.fill = { type: "solid", color: CHART_PALETTE[i % CHART_PALETTE.length] };
+        seg.stroke = { color: "#1a3a70", width: 2, dash: "solid" };
+        seg.text = text;
+        seg.fontColor = "#ffffff";
+        seg.fontSize = 14;
+        seg.bold = true;
+        seg.align = "center";
+        return seg;
+    });
+    return { x: x0, y: y0, w: topW, h: totalH, children };
+}
+
 function smartArtCycle() {
     const boxW = 130, boxH = 60, radius = 140;
     const cx = SLIDE_W / 2, cy = SLIDE_H / 2;
@@ -4569,6 +4732,98 @@ function smartArtCycle() {
         children.push(smartArtConnector("arrow", x1 + ux * margin, y1 + uy * margin, x2 - ux * margin, y2 - uy * margin));
     }
     return { x: cx - radius - boxW / 2, y: cy - radius - boxH / 2, w: (radius + boxW / 2) * 2, h: (radius + boxH / 2) * 2, children };
+}
+
+// Same ring+arrow structure as the basic cycle, but with squared nodes and
+// one more step — a denser, more "process-like" cycle.
+function smartArtBlockCycle() {
+    const boxW = 110, boxH = 60, radius = 150;
+    const cx = SLIDE_W / 2, cy = SLIDE_H / 2;
+    const labels = ["Design", "Build", "Test", "Review", "Release"];
+    const children = [];
+    const positions = labels.map((_, i) => {
+        const ang = -Math.PI / 2 + i * (2 * Math.PI / labels.length);
+        return [cx + radius * Math.cos(ang), cy + radius * Math.sin(ang)];
+    });
+    positions.forEach(([px, py], i) => {
+        children.push(smartArtLabelBox("roundrect", px - boxW / 2, py - boxH / 2, boxW, boxH, labels[i], CHART_PALETTE[i % CHART_PALETTE.length], 13));
+    });
+    for (let i = 0; i < positions.length; i++) {
+        const [x1, y1] = positions[i];
+        const [x2, y2] = positions[(i + 1) % positions.length];
+        const dx = x2 - x1, dy = y2 - y1;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len, uy = dy / len;
+        const margin = boxH / 2 + 8;
+        children.push(smartArtConnector("arrow", x1 + ux * margin, y1 + uy * margin, x2 - ux * margin, y2 - uy * margin));
+    }
+    return { x: cx - radius - boxW / 2, y: cy - radius - boxH / 2, w: (radius + boxW / 2) * 2, h: (radius + boxH / 2) * 2, children };
+}
+
+// Minimalist cycle: plain text labels in a ring joined by thin arrows, no
+// surrounding boxes at all.
+function smartArtTextCycle() {
+    const radius = 130;
+    const cx = SLIDE_W / 2, cy = SLIDE_H / 2;
+    const labels = ["Plan", "Act", "Reflect"];
+    const labelW = 110, labelH = 36;
+    const children = [];
+    const positions = labels.map((_, i) => {
+        const ang = -Math.PI / 2 + i * (2 * Math.PI / labels.length);
+        return [cx + radius * Math.cos(ang), cy + radius * Math.sin(ang)];
+    });
+    positions.forEach(([px, py], i) => {
+        const label = makeObject("text", px - labelW / 2, py - labelH / 2, labelW, labelH);
+        label.text = labels[i];
+        label.fontColor = CHART_PALETTE[i % CHART_PALETTE.length];
+        label.fontSize = 18;
+        label.bold = true;
+        label.align = "center";
+        children.push(label);
+    });
+    for (let i = 0; i < positions.length; i++) {
+        const [x1, y1] = positions[i];
+        const [x2, y2] = positions[(i + 1) % positions.length];
+        const dx = x2 - x1, dy = y2 - y1;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len, uy = dy / len;
+        const margin = labelW / 2;
+        children.push(smartArtConnector("arrow", x1 + ux * margin, y1 + uy * margin, x2 - ux * margin, y2 - uy * margin, "#aaaaaa", 1.5));
+    }
+    return { x: cx - radius - labelW / 2, y: cy - radius - labelH / 2, w: (radius + labelW / 2) * 2, h: (radius + labelH / 2) * 2, children };
+}
+
+// Wedge-shaped blocks radiating from a center hub — a pinwheel/gear look,
+// structurally distinct from the ring-of-nodes cycles above.
+function smartArtSegmentedCycle() {
+    const labels = ["North", "East", "South", "West"];
+    const cx = SLIDE_W / 2, cy = SLIDE_H / 2;
+    const hubR = 36, segW = 92, segH = 120;
+    const n = labels.length;
+    const children = [];
+    for (let i = 0; i < n; i++) {
+        const angDeg = i * (360 / n);
+        const angRad = angDeg * Math.PI / 180;
+        const dist = hubR + segH / 2;
+        const segCx = cx + dist * Math.sin(angRad);
+        const segCy = cy - dist * Math.cos(angRad);
+        const seg = makeObject("trapezoid", segCx - segW / 2, segCy - segH / 2, segW, segH);
+        seg.rotation = angDeg;
+        seg.fill = { type: "solid", color: CHART_PALETTE[i % CHART_PALETTE.length] };
+        seg.stroke = { color: "#ffffff", width: 2, dash: "solid" };
+        seg.text = labels[i];
+        seg.fontColor = "#ffffff";
+        seg.fontSize = 14;
+        seg.bold = true;
+        seg.align = "center";
+        children.push(seg);
+    }
+    const hub = makeObject("ellipse", cx - hubR, cy - hubR, hubR * 2, hubR * 2);
+    hub.fill = { type: "solid", color: "#333333" };
+    hub.stroke = { color: "#ffffff", width: 2, dash: "solid" };
+    children.push(hub);
+    const span = hubR + segH;
+    return { x: cx - span, y: cy - span, w: span * 2, h: span * 2, children };
 }
 
 function smartArtPyramid() {
@@ -4599,6 +4854,110 @@ function smartArtList() {
     return { x: x0, y: y0, w: boxW, h: totalH, children };
 }
 
+// Same-width blocks growing taller left-to-right, bottom-aligned — a "rising
+// importance" list rather than a flat stack.
+function smartArtAscendingList() {
+    const items = ["Item 1", "Item 2", "Item 3", "Item 4"];
+    const boxW = 90, gap = 16, baseH = 50, stepH = 28;
+    const totalW = items.length * boxW + (items.length - 1) * gap;
+    const maxH = baseH + (items.length - 1) * stepH;
+    const x0 = (SLIDE_W - totalW) / 2;
+    const yBase = (SLIDE_H + maxH) / 2;
+    const children = items.map((text, i) => {
+        const h = baseH + i * stepH;
+        const x = x0 + i * (boxW + gap);
+        const y = yBase - h;
+        return smartArtLabelBox("roundrect", x, y, boxW, h, text, CHART_PALETTE[i % CHART_PALETTE.length], 14);
+    });
+    return { x: x0, y: yBase - maxH, w: totalW, h: maxH, children };
+}
+
+// A row of picture-placeholder circles, each linked down to its own label —
+// the classic "icon + caption" list.
+function smartArtPictureAccentList() {
+    const items = ["Point 1", "Point 2", "Point 3", "Point 4"];
+    const circleD = 64, labelW = 100, labelH = 40, gap = 28, lineH = 18;
+    const totalW = items.length * labelW + (items.length - 1) * gap;
+    const x0 = (SLIDE_W - totalW) / 2;
+    const yTop = (SLIDE_H - (circleD + lineH + labelH)) / 2;
+    const children = [];
+    items.forEach((text, i) => {
+        const colX = x0 + i * (labelW + gap);
+        const cx = colX + labelW / 2;
+        const circle = makeObject("ellipse", cx - circleD / 2, yTop, circleD, circleD);
+        circle.fill = { type: "solid", color: CHART_PALETTE[i % CHART_PALETTE.length] };
+        circle.stroke = { color: "#ffffff", width: 3, dash: "solid" };
+        children.push(circle);
+        children.push(smartArtConnector("line", cx, yTop + circleD, cx, yTop + circleD + lineH, "#999999", 2));
+        children.push(smartArtLabelBox("roundrect", colX, yTop + circleD + lineH, labelW, labelH, text, "#5b8bcf", 13));
+    });
+    return { x: x0, y: yTop, w: totalW, h: circleD + lineH + labelH, children };
+}
+
+// One bar divided into colored bands, each with a bullet + label — a list
+// that reads as a single cohesive block rather than separate cards.
+function smartArtSegmentedList() {
+    const items = ["First point", "Second point", "Third point", "Fourth point"];
+    const barW = 380, barH = 44;
+    const totalH = barH * items.length;
+    const x0 = (SLIDE_W - barW) / 2, y0 = (SLIDE_H - totalH) / 2;
+    const children = [];
+    items.forEach((text, i) => {
+        const y = y0 + i * barH;
+        const bar = makeObject("rect", x0, y, barW, barH);
+        bar.fill = { type: "solid", color: CHART_PALETTE[i % CHART_PALETTE.length] };
+        bar.stroke = { color: "#ffffff", width: 1, dash: "solid" };
+        children.push(bar);
+        const bullet = makeObject("ellipse", x0 + 14, y + barH / 2 - 6, 12, 12);
+        bullet.fill = { type: "solid", color: "#ffffff" };
+        bullet.stroke = { color: "none", width: 0, dash: "solid" };
+        children.push(bullet);
+        const label = makeObject("text", x0 + 36, y, barW - 50, barH);
+        label.text = text;
+        label.fontColor = "#ffffff";
+        label.fontSize = 16;
+        label.bold = true;
+        label.align = "left";
+        children.push(label);
+    });
+    return { x: x0, y: y0, w: barW, h: totalH, children };
+}
+
+// Concentric rings (largest first, so smaller ones layer on top) with a
+// legend — a "core to outer" prioritized list, PowerPoint's Target List.
+function smartArtTargetList() {
+    const labels = ["Core", "Inner", "Mid", "Outer"];
+    const maxR = 130;
+    const n = labels.length;
+    const cx = SLIDE_W / 2 - 60, cy = SLIDE_H / 2;
+    const children = [];
+    for (let i = 0; i < n; i++) {
+        const r = maxR * (n - i) / n;
+        const ring = makeObject("ellipse", cx - r, cy - r, r * 2, r * 2);
+        ring.fill = { type: "solid", color: CHART_PALETTE[i % CHART_PALETTE.length] };
+        ring.stroke = { color: "#ffffff", width: 2, dash: "solid" };
+        children.push(ring);
+    }
+    const legendX = cx + maxR + 40;
+    const legendItemH = 36;
+    const legendY0 = cy - (n * legendItemH) / 2;
+    labels.forEach((text, i) => {
+        const dot = makeObject("ellipse", legendX, legendY0 + i * legendItemH + 8, 14, 14);
+        dot.fill = { type: "solid", color: CHART_PALETTE[i % CHART_PALETTE.length] };
+        dot.stroke = { color: "none", width: 0, dash: "solid" };
+        children.push(dot);
+        const label = makeObject("text", legendX + 22, legendY0 + i * legendItemH, 100, legendItemH);
+        label.text = text;
+        label.fontColor = "#333333";
+        label.fontSize = 15;
+        label.align = "left";
+        children.push(label);
+    });
+    const minX = cx - maxR;
+    const maxX = legendX + 130;
+    return { x: minX, y: cy - maxR, w: maxX - minX, h: maxR * 2, children };
+}
+
 function smartArtHierarchy() {
     const topW = 160, boxH = 60, childW = 140, gap = 30, vGap = 60;
     const totalW = childW * 3 + gap * 2;
@@ -4619,28 +4978,117 @@ function smartArtHierarchy() {
     return { x: minX, y: y0, w: maxX - minX, h: childY + boxH - y0, children };
 }
 
-const SMARTART_LAYOUTS = {
-    process: smartArtProcess,
-    cycle: smartArtCycle,
-    pyramid: smartArtPyramid,
-    list: smartArtList,
-    hierarchy: smartArtHierarchy,
-};
+const SMARTART_CATEGORIES = [
+    {
+        name: "List",
+        layouts: [
+            { id: "list-basic", name: "Basic Block List", build: smartArtList },
+            { id: "list-ascending", name: "Ascending Block List", build: smartArtAscendingList },
+            { id: "list-picture", name: "Picture Accent List", build: smartArtPictureAccentList },
+            { id: "list-segmented", name: "Segmented Bullet List", build: smartArtSegmentedList },
+            { id: "list-target", name: "Target List", build: smartArtTargetList },
+        ],
+    },
+    {
+        name: "Cycle",
+        layouts: [
+            { id: "cycle-basic", name: "Basic Cycle", build: smartArtCycle },
+            { id: "cycle-block", name: "Block Cycle", build: smartArtBlockCycle },
+            { id: "cycle-text", name: "Text Cycle", build: smartArtTextCycle },
+            { id: "cycle-segmented", name: "Segmented Cycle", build: smartArtSegmentedCycle },
+        ],
+    },
+    {
+        name: "Process",
+        layouts: [
+            { id: "process-basic", name: "Basic Process", build: smartArtProcess },
+            { id: "process-chevron", name: "Chevron Process", build: smartArtChevronProcess },
+            { id: "process-picture", name: "Picture Accent Process", build: smartArtPictureAccentProcess },
+            { id: "process-vertical", name: "Vertical Process", build: smartArtVerticalProcess },
+            { id: "process-zigzag", name: "Zigzag Process", build: smartArtZigzagProcess },
+            { id: "process-funnel", name: "Funnel Process", build: smartArtFunnelProcess },
+        ],
+    },
+    {
+        name: "Pyramid",
+        layouts: [
+            { id: "pyramid-basic", name: "Basic Pyramid", build: smartArtPyramid },
+        ],
+    },
+    {
+        name: "Hierarchy",
+        layouts: [
+            { id: "hierarchy-basic", name: "Org Chart", build: smartArtHierarchy },
+        ],
+    },
+];
 
-document.querySelectorAll("#smartArtDropdownMenu button").forEach(btn => {
-    btn.onclick = (e) => {
-        e.stopPropagation();
-        const layoutFn = SMARTART_LAYOUTS[btn.dataset.smartart];
-        if (!layoutFn) return;
-        pushHistory(true);
-        const { x, y, w, h, children } = layoutFn();
-        const group = { id: uid(), type: "group", x, y, w, h, rotation: 0, opacity: 100, shadow: false, children };
-        curSlide().objects.push(group);
-        state.selection = [group.id];
-        setTool("select");
-        render(); renderProperties();
-        document.getElementById("smartArtDropdownMenu").classList.remove("open");
-    };
+function insertSmartArtLayout(buildFn) {
+    pushHistory(true);
+    const { x, y, w, h, children } = buildFn();
+    const group = { id: uid(), type: "group", x, y, w, h, rotation: 0, opacity: 100, shadow: false, children };
+    curSlide().objects.push(group);
+    state.selection = [group.id];
+    setTool("select");
+    render(); renderProperties();
+}
+
+function openSmartArtGallery() {
+    const modal = document.getElementById("smartArtModal");
+    const scroll = document.getElementById("smartArtGridScroll");
+    scroll.innerHTML = "";
+
+    SMARTART_CATEGORIES.forEach(cat => {
+        const section = document.createElement("div");
+        section.className = "smartart-cat-section";
+
+        const heading = document.createElement("div");
+        heading.className = "smartart-cat-heading";
+        heading.textContent = cat.name;
+        section.appendChild(heading);
+
+        const grid = document.createElement("div");
+        grid.className = "smartart-cat-grid";
+        cat.layouts.forEach(layout => {
+            const card = document.createElement("div");
+            card.className = "tpl-card";
+
+            const thumb = document.createElement("div");
+            thumb.className = "tpl-card-thumb";
+            const { fill } = curSlide();
+            const { children } = layout.build();
+            thumb.appendChild(renderSlidePreviewSvg(fill, children));
+
+            const label = document.createElement("div");
+            label.className = "tpl-card-label";
+            label.textContent = layout.name;
+
+            card.appendChild(thumb);
+            card.appendChild(label);
+            card.onclick = () => {
+                insertSmartArtLayout(layout.build);
+                modal.style.display = "none";
+            };
+            grid.appendChild(card);
+        });
+        section.appendChild(grid);
+        scroll.appendChild(section);
+    });
+
+    modal.style.display = "flex";
+}
+
+document.getElementById("smartArtDropdownBtn").onclick = (e) => {
+    e.stopPropagation();
+    openSmartArtGallery();
+};
+document.getElementById("smartArtModalClose").onclick = () => {
+    document.getElementById("smartArtModal").style.display = "none";
+};
+document.getElementById("smartArtModal").addEventListener("click", (e) => {
+    if (e.target === document.getElementById("smartArtModal")) {
+        document.getElementById("smartArtModal").style.display = "none";
+    }
 });
 
 // ============ Insert tab: Chart ============
@@ -5419,6 +5867,35 @@ function updatePlot3dPreview() {
 ["plot2dExpr"].forEach(id => document.getElementById(id).addEventListener("input", updatePlot2dPreview));
 ["plot3dExpr"].forEach(id => document.getElementById(id).addEventListener("input", updatePlot3dPreview));
 
+// ============ Insert tab: Plot — 3D surface colour schemes ============
+const PLOT3D_COLOR_SCHEMES = {
+    rainbow: [
+        [0, "#7e3fb2"], [0.17, "#3b4cca"], [0.34, "#1fa088"], [0.5, "#5fc23a"],
+        [0.66, "#e8d33d"], [0.83, "#f08a2c"], [1, "#e0392f"],
+    ],
+    ocean: [[0, "#2454a0"], [1, "#a4c2e0"]],
+    sunset: [[0, "#2c1250"], [0.3, "#8b2a8a"], [0.6, "#e0526f"], [0.8, "#f5905a"], [1, "#ffd56b"]],
+    forest: [[0, "#0d3b24"], [0.5, "#3f8f4f"], [1, "#c9e89e"]],
+};
+
+const plot3dColorStartBtn = makeColorPickerBtn("#2454a0", () => {});
+document.getElementById("plot3dColorStart").appendChild(plot3dColorStartBtn);
+const plot3dColorEndBtn = makeColorPickerBtn("#a4c2e0", () => {});
+document.getElementById("plot3dColorEnd").appendChild(plot3dColorEndBtn);
+
+function plot3dColorscale() {
+    const scheme = document.getElementById("plot3dColorScheme").value;
+    if (scheme === "custom") {
+        return [[0, plot3dColorStartBtn.dataset.cv], [1, plot3dColorEndBtn.dataset.cv]];
+    }
+    return PLOT3D_COLOR_SCHEMES[scheme] || PLOT3D_COLOR_SCHEMES.rainbow;
+}
+
+document.getElementById("plot3dColorScheme").addEventListener("change", () => {
+    const isCustom = document.getElementById("plot3dColorScheme").value === "custom";
+    document.getElementById("plot3dCustomColorRow").style.display = isCustom ? "flex" : "none";
+});
+
 function updatePlotParamPreview() {
     const xExpr = document.getElementById("plotParamX").value;
     const yExpr = document.getElementById("plotParamY").value;
@@ -5556,7 +6033,11 @@ async function insertPlot3d() {
 
     await Plotly.newPlot(plotRenderTarget, [{
         x: xs, y: ys, z: zs, type: "surface", name: `z = ${expr}`, showscale: false,
-        colorscale: [[0, "#2454a0"], [1, "#a4c2e0"]],
+        colorscale: plot3dColorscale(),
+        contours: {
+            x: { show: true, color: "#000000", width: 1, start: xMin, end: xMax, size: (xMax - xMin) / 48 },
+            y: { show: true, color: "#000000", width: 1, start: yMin, end: yMax, size: (yMax - yMin) / 48 },
+        },
     }], {
         margin: { t: 30, r: 20, b: 20, l: 20 },
         font: PLOT_FONT,
@@ -5830,9 +6311,15 @@ function setTool(tool) {
     } else if (INK_TOOLS.includes(tool)) {
         document.body.style.cursor = "crosshair";
         if (penDraw) { const el = svg.querySelector("#freeform-preview"); if (el) el.remove(); penDraw = null; }
+    } else if (tool === "ink-eraser") {
+        document.body.style.cursor = "none";
+        if (penDraw) { const el = svg.querySelector("#freeform-preview"); if (el) el.remove(); penDraw = null; }
+        if (inkDraw) { const el = svg.querySelector("#ink-preview"); if (el) el.remove(); inkDraw = null; }
     } else {
         if (penDraw) { const el = svg.querySelector("#freeform-preview"); if (el) el.remove(); penDraw = null; }
         if (inkDraw) { const el = svg.querySelector("#ink-preview"); if (el) el.remove(); inkDraw = null; }
+        removeEraserPreview();
+        eraserDrag = false;
         document.body.style.cursor = "";
     }
 }
@@ -6475,6 +6962,27 @@ function copySelection() {
     _copyToSystemClipboard(objs).catch(() => {});
 }
 
+// html2canvas is not loaded at startup; load it on first copy. Plain
+// SVG-to-<img>-to-canvas rasterization permanently taints the canvas the
+// moment the SVG contains a <foreignObject> — which every text-bearing shape
+// here uses for rich HTML text — so reading the canvas back to make a PNG
+// throws. html2canvas walks the live DOM and paints it directly instead of
+// going through an <img>, which sidesteps that restriction entirely.
+let _html2canvasPromise = null;
+function loadHtml2canvas() {
+    if (typeof window.html2canvas === "function") return Promise.resolve();
+    if (!_html2canvasPromise) {
+        _html2canvasPromise = new Promise((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = "https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js";
+            s.onload = resolve;
+            s.onerror = () => { _html2canvasPromise = null; reject(new Error("Failed to load html2canvas")); };
+            document.head.appendChild(s);
+        });
+    }
+    return _html2canvasPromise;
+}
+
 // Renders selected objects to a PNG and writes it to the system clipboard so
 // the content can be pasted into PowerPoint or any other application.
 async function _copyToSystemClipboard(objs) {
@@ -6501,23 +7009,65 @@ async function _copyToSystemClipboard(objs) {
     const tmpDefs = document.createElementNS(svgNS, "defs");
     tmpSvg.appendChild(tmpDefs);
     objs.forEach(o => tmpSvg.appendChild(renderObject(o, tmpDefs, true, 99999)));
-    const svgStr = new XMLSerializer().serializeToString(tmpSvg);
 
-    // Draw SVG to an offscreen canvas at 2× resolution for crisp output
-    const scale = 2;
-    const canvas = document.createElement("canvas");
-    canvas.width  = Math.ceil(vw * scale);
-    canvas.height = Math.ceil(vh * scale);
-    const ctx = canvas.getContext("2d");
-    const svgBlob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(svgBlob);
-    await new Promise((res, rej) => {
-        const img = new Image();
-        img.onload = () => { ctx.scale(scale, scale); ctx.drawImage(img, 0, 0); URL.revokeObjectURL(url); res(); };
-        img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("SVG load failed")); };
-        img.src = url;
+    // Pull every foreignObject's HTML out into plain, absolutely-positioned
+    // siblings: html2canvas resolves inline colour correctly for ordinary
+    // HTML, but not reliably for HTML nested inside an SVG foreignObject
+    // (it silently renders text black regardless of the actual style).
+    // Stripping the foreignObjects also means the SVG itself is safe to
+    // rasterize via the simpler/crisper <img>+drawImage path again, since
+    // that path is only unsafe when foreignObject is present.
+    const textLayer = document.createElement("div");
+    textLayer.style.cssText = `position:absolute; left:0; top:0; width:${vw}px; height:${vh}px;`;
+    tmpSvg.querySelectorAll("foreignObject").forEach(fo => {
+        const holder = document.createElement("div");
+        holder.style.cssText = `position:absolute; left:${parseFloat(fo.getAttribute("x")) - vx}px; top:${parseFloat(fo.getAttribute("y")) - vy}px; width:${fo.getAttribute("width")}px; height:${fo.getAttribute("height")}px;`;
+        holder.append(...fo.children);
+        textLayer.appendChild(holder);
+        fo.remove();
     });
-    const pngBlob = await new Promise(res => canvas.toBlob(res, "image/png"));
+
+    // Both layers need to be in the live document for correct layout/paint —
+    // parked off-screen rather than display:none, since some layout/paint
+    // paths skip non-displayed content.
+    const wrap = document.createElement("div");
+    wrap.style.cssText = `position:fixed; left:-99999px; top:0; width:${vw}px; height:${vh}px;`;
+    wrap.appendChild(tmpSvg);
+    wrap.appendChild(textLayer);
+    document.body.appendChild(wrap);
+
+    let pngBlob;
+    try {
+        const scale = 2;
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.ceil(vw * scale);
+        canvas.height = Math.ceil(vh * scale);
+        const ctx = canvas.getContext("2d");
+
+        // Layer 1: shape geometry, now foreignObject-free — safe for the
+        // simple/crisp <img>+drawImage rasterization path.
+        const svgStr = new XMLSerializer().serializeToString(tmpSvg);
+        const svgBlob = new Blob([svgStr], { type: "image/svg+xml;charset=utf-8" });
+        const url = URL.createObjectURL(svgBlob);
+        await new Promise((res, rej) => {
+            const img = new Image();
+            img.onload = () => { ctx.scale(scale, scale); ctx.drawImage(img, 0, 0); URL.revokeObjectURL(url); res(); };
+            img.onerror = () => { URL.revokeObjectURL(url); rej(new Error("SVG load failed")); };
+            img.src = url;
+        });
+
+        // Layer 2: the extracted text HTML, composited on top via html2canvas.
+        if (textLayer.children.length) {
+            await loadHtml2canvas();
+            const textCanvas = await window.html2canvas(textLayer, { backgroundColor: null, scale });
+            ctx.drawImage(textCanvas, 0, 0, vw, vh); // ctx is still 2×-scaled from above
+        }
+
+        pngBlob = await new Promise(res => canvas.toBlob(res, "image/png"));
+    } finally {
+        wrap.remove();
+    }
+
     await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
 }
 
@@ -6842,6 +7392,15 @@ svg.addEventListener("pointerdown", (e) => {
             if (e.pointerType === "touch") return;
             e.preventDefault();
             inkBeginStroke(state.tool, pt, e.pressure || 0.5);
+            return;
+        }
+        if (state.tool === "ink-eraser") {
+            if (e.pointerType === "touch") return;
+            e.preventDefault();
+            pushHistory(true);
+            eraserDrag = true;
+            eraseInkAt(pt);
+            renderEraserPreview(pt);
             return;
         }
         if (state.tool === "freeform") {
@@ -7349,6 +7908,16 @@ window.addEventListener("pointermove", (e) => {
         return;
     }
 
+    // Eraser: the size-indicator ring always follows the pointer while the
+    // tool is active, but only actually erases while the pointer is down.
+    if (state.tool === "ink-eraser") {
+        if (e.pointerType === "touch") return;
+        const pt = svgPoint(e);
+        renderEraserPreview(pt);
+        if (eraserDrag) eraseInkAt(pt);
+        return;
+    }
+
     // Crop mode drag
     if (cropState && cropState.edge) {
         const obj = getObj(cropState.id);
@@ -7631,6 +8200,11 @@ window.addEventListener("pointerup", (e) => {
     // Draw tab inking: finalize the stroke into an ink object
     if (inkDraw) {
         if (e.pointerType !== "touch") finishInkStroke();
+        return;
+    }
+
+    if (eraserDrag) {
+        eraserDrag = false;
         return;
     }
 
@@ -9644,7 +10218,11 @@ function addRecentColor(hex) {
 }
 
 let _cpPopup = null;
-function _closeColorPicker() { _cpPopup?.remove(); _cpPopup = null; }
+let _cpWheelPopup = null;
+function _closeColorPicker() {
+    _cpPopup?.remove(); _cpPopup = null;
+    _cpWheelPopup?.remove(); _cpWheelPopup = null;
+}
 
 // Creates a color swatch button showing the color picker popup on click.
 // onChange(color): called for every change (live & final)
@@ -9680,6 +10258,296 @@ function makeColorPickerBtn(value, onChange, { allowNone = false, onCommit = nul
         }, { allowNone });
     });
     return btn;
+}
+
+// ---- color math for the wheel picker ----
+function cpHexToRgb(hex) {
+    const n = parseInt((hex || "#000000").replace("#", "").padStart(6, "0"), 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function cpRgbToHex(r, g, b) {
+    return "#" + [r, g, b].map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, "0")).join("");
+}
+function cpHsvToRgb(h, s, v) {
+    h = (((h % 360) + 360) % 360) / 60;
+    const i = Math.floor(h), f = h - i;
+    const p = v * (1 - s), q = v * (1 - f * s), t = v * (1 - (1 - f) * s);
+    let r, g, b;
+    switch (i % 6) {
+        case 0: r = v; g = t; b = p; break;
+        case 1: r = q; g = v; b = p; break;
+        case 2: r = p; g = v; b = t; break;
+        case 3: r = p; g = q; b = v; break;
+        case 4: r = t; g = p; b = v; break;
+        default: r = v; g = p; b = q; break;
+    }
+    return [r * 255, g * 255, b * 255];
+}
+function cpRgbToHsv(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    let h = 0;
+    if (d !== 0) {
+        if (max === r) h = ((g - b) / d) % 6;
+        else if (max === g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h *= 60;
+        if (h < 0) h += 360;
+    }
+    return [h, max === 0 ? 0 : d / max, max];
+}
+// renders a static hue/saturation wheel at full value; brightness is applied
+// separately by the caller so the wheel image never needs to be recomputed
+function cpRenderWheel(canvas) {
+    // render at devicePixelRatio so the wheel is crisp (not blocky) on
+    // retina screens, with a soft 1px-equivalent antialiased edge instead
+    // of a hard per-pixel cutoff (which otherwise looks jagged/staircased)
+    const cssSize = canvas.width;
+    const dpr = window.devicePixelRatio || 1;
+    const size = Math.round(cssSize * dpr);
+    canvas.width = size;
+    canvas.height = size;
+    canvas.style.width = cssSize + "px";
+    canvas.style.height = cssSize + "px";
+    const ctx = canvas.getContext("2d");
+    const img = ctx.createImageData(size, size);
+    const cx = size / 2, cy = size / 2, r = size / 2;
+    const aa = Math.max(1, dpr);
+    for (let y = 0; y < size; y++) {
+        for (let x = 0; x < size; x++) {
+            const dx = x - cx + 0.5, dy = y - cy + 0.5;
+            const dist = Math.sqrt(dx * dx + dy * dy);
+            const idx = (y * size + x) * 4;
+            if (dist > r + aa) { img.data[idx + 3] = 0; continue; }
+            let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+            if (angle < 0) angle += 360;
+            const [rr, gg, bb] = cpHsvToRgb(angle, Math.min(1, dist / r), 1);
+            img.data[idx] = rr; img.data[idx + 1] = gg; img.data[idx + 2] = bb;
+            img.data[idx + 3] = dist <= r ? 255 : Math.max(0, Math.round(255 * (1 - (dist - r) / aa)));
+        }
+    }
+    ctx.putImageData(img, 0, 0);
+}
+function cpWheelXY(h, s, size) {
+    const r = (size / 2) * Math.min(1, s);
+    const rad = h * Math.PI / 180;
+    return [size / 2 + r * Math.cos(rad), size / 2 + r * Math.sin(rad)];
+}
+function cpWheelHS(x, y, size) {
+    const cx = size / 2, cy = size / 2, maxR = size / 2;
+    const dx = x - cx, dy = y - cy;
+    const dist = Math.min(maxR, Math.sqrt(dx * dx + dy * dy));
+    let angle = Math.atan2(dy, dx) * 180 / Math.PI;
+    if (angle < 0) angle += 360;
+    return [angle, dist / maxR];
+}
+
+// lets the user sample a colour from anywhere — not just the slide, the
+// whole page, even other windows — via the browser's native EyeDropper API
+// (Chrome/Edge), which has its own built-in magnifier. Browsers without it
+// (Firefox/Safari) fall back to a custom slide-only sampler with its own
+// loupe, since arbitrary page content can't be rasterized without it.
+function startCanvasEyedropper(onPick) {
+    if (window.EyeDropper) {
+        _closeColorPicker();
+        new EyeDropper().open().then(result => onPick(result.sRGBHex)).catch(() => {});
+        return;
+    }
+    const svg = document.getElementById("slideSvg");
+    const xml = new XMLSerializer().serializeToString(svg);
+    const blob = new Blob([xml], { type: "image/svg+xml;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    img.onload = () => {
+        const off = document.createElement("canvas");
+        off.width = SLIDE_W; off.height = SLIDE_H;
+        const ctx = off.getContext("2d");
+        ctx.drawImage(img, 0, 0, SLIDE_W, SLIDE_H);
+        URL.revokeObjectURL(url);
+        _closeColorPicker();
+
+        const svgRect = svg.getBoundingClientRect();
+        // the overlay covers the whole gridded canvas-area (so the loupe can
+        // roam past the slide's edge), but sampling stays clamped to the
+        // slide's own pixels, computed from svgRect below
+        const panRect = (document.querySelector(".canvas-area") || svg).getBoundingClientRect();
+        const overlay = document.createElement("div");
+        overlay.className = "cp-eyedrop-overlay";
+        overlay.style.left = panRect.left + "px";
+        overlay.style.top = panRect.top + "px";
+        overlay.style.width = panRect.width + "px";
+        overlay.style.height = panRect.height + "px";
+
+        const loupeSize = 100, loupeZoom = 9, srcPx = Math.round(loupeSize / loupeZoom);
+        const half = Math.floor(srcPx / 2);
+        const loupe = document.createElement("div");
+        loupe.className = "cp-eyedrop-loupe";
+        loupe.style.display = "none";
+        const loupeCanvas = document.createElement("canvas");
+        loupeCanvas.width = loupeSize; loupeCanvas.height = loupeSize;
+        const loupeLabel = document.createElement("div");
+        loupeLabel.className = "cp-eyedrop-label";
+        loupe.append(loupeCanvas, loupeLabel);
+        document.body.appendChild(overlay);
+        document.body.appendChild(loupe);
+
+        const lctx = loupeCanvas.getContext("2d");
+        lctx.imageSmoothingEnabled = false;
+        let lastHex = "#000000";
+
+        const sampleAt = (clientX, clientY) => {
+            const cx = Math.max(0, Math.min(SLIDE_W - 1, Math.round((clientX - svgRect.left) / svgRect.width * SLIDE_W)));
+            const cy = Math.max(0, Math.min(SLIDE_H - 1, Math.round((clientY - svgRect.top) / svgRect.height * SLIDE_H)));
+            const px = ctx.getImageData(cx, cy, 1, 1).data;
+            lastHex = cpRgbToHex(px[0], px[1], px[2]);
+
+            lctx.clearRect(0, 0, loupeSize, loupeSize);
+            lctx.drawImage(off, cx - half, cy - half, srcPx, srcPx, 0, 0, loupeSize, loupeSize);
+            lctx.strokeStyle = "rgba(255,255,255,0.95)";
+            lctx.lineWidth = 1.5;
+            lctx.strokeRect(loupeSize / 2 - loupeZoom / 2, loupeSize / 2 - loupeZoom / 2, loupeZoom, loupeZoom);
+            lctx.strokeStyle = "rgba(0,0,0,0.55)";
+            lctx.lineWidth = 0.75;
+            lctx.strokeRect(loupeSize / 2 - loupeZoom / 2 + 1, loupeSize / 2 - loupeZoom / 2 + 1, loupeZoom - 2, loupeZoom - 2);
+
+            loupeLabel.textContent = lastHex.toUpperCase();
+            loupeLabel.style.background = lastHex;
+            const lum = 0.299 * px[0] + 0.587 * px[1] + 0.114 * px[2];
+            loupeLabel.style.color = lum > 140 ? "#111" : "#fff";
+
+            loupe.style.left = clientX + "px";
+            loupe.style.top = clientY + "px";
+        };
+
+        const moveHandler = (e) => { loupe.style.display = "flex"; sampleAt(e.clientX, e.clientY); };
+        const pickHandler = (e) => {
+            e.preventDefault(); e.stopPropagation();
+            sampleAt(e.clientX, e.clientY);
+            cleanup();
+            onPick(lastHex);
+        };
+        const escHandler = (e) => { if (e.key === "Escape") cleanup(); };
+        function cleanup() {
+            overlay.remove(); loupe.remove();
+            window.removeEventListener("keydown", escHandler, true);
+        }
+        overlay.addEventListener("pointermove", moveHandler);
+        overlay.addEventListener("pointerdown", pickHandler);
+        window.addEventListener("keydown", escHandler, true);
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+}
+
+// builds the secondary "More Colours…" popup: hue/saturation wheel +
+// brightness band + hex input + eyedropper. Stacked on top of (not inside)
+// the swatch-grid popup, since it can be open at the same time as it.
+function _buildCpWheelPopup(anchor, curColor, onSelect) {
+    const popup = document.createElement("div");
+    popup.className = "cp-popup cp-wheel-popup";
+    popup.addEventListener("mousedown", e => e.stopPropagation());
+    popup.addEventListener("click", e => e.stopPropagation());
+
+    const wheelSize = 140;
+    let [wh, ws, wv] = [0, 0, 1];
+    if (curColor && curColor !== "none" && /^#/.test(curColor)) {
+        [wh, ws, wv] = cpRgbToHsv(...cpHexToRgb(curColor));
+    }
+
+    const wheelWrap = document.createElement("div");
+    wheelWrap.className = "cp-wheel-wrap";
+    const wheelCanvas = document.createElement("canvas");
+    wheelCanvas.className = "cp-wheel-canvas";
+    wheelCanvas.width = wheelSize; wheelCanvas.height = wheelSize;
+    cpRenderWheel(wheelCanvas);
+    const wheelCursor = document.createElement("div");
+    wheelCursor.className = "cp-wheel-cursor";
+    wheelWrap.append(wheelCanvas, wheelCursor);
+
+    const briRow = document.createElement("div");
+    briRow.className = "cp-bri-row";
+    const briLabel = document.createElement("span");
+    briLabel.className = "cp-bri-label"; briLabel.textContent = "Brightness";
+    const briSlider = document.createElement("input");
+    briSlider.type = "range"; briSlider.min = "0"; briSlider.max = "100"; briSlider.className = "cp-bri-slider";
+    briRow.append(briLabel, briSlider);
+
+    const hexRow = document.createElement("div");
+    hexRow.className = "cp-hex-row";
+    const hexHash = document.createElement("span");
+    hexHash.className = "cp-hex-hash"; hexHash.textContent = "#";
+    const hexInput = document.createElement("input");
+    hexInput.type = "text"; hexInput.className = "cp-hex-input"; hexInput.maxLength = 6;
+    const eyeBtn = document.createElement("button");
+    eyeBtn.type = "button"; eyeBtn.className = "cp-eyedropper-btn"; eyeBtn.title = "Pick colour from slide";
+    eyeBtn.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14"><path d="M11.5 1.5a2.1 2.1 0 0 1 3 3l-1.6 1.6-3-3 1.6-1.6z" fill="none" stroke="#555" stroke-width="1.3" stroke-linejoin="round"/><path d="M11.2 4.8l-6.6 6.6-2.1.5.5-2.1 6.6-6.6 1.6 1.6z" fill="none" stroke="#555" stroke-width="1.3" stroke-linejoin="round"/></svg>`;
+    hexRow.append(hexHash, hexInput, eyeBtn);
+
+    popup.append(wheelWrap, briRow, hexRow);
+
+    const syncWheelUI = () => {
+        const hex = cpRgbToHex(...cpHsvToRgb(wh, ws, wv));
+        const [cx, cy] = cpWheelXY(wh, ws, wheelSize);
+        wheelCursor.style.left = cx + "px";
+        wheelCursor.style.top = cy + "px";
+        hexInput.value = hex.slice(1).toUpperCase();
+        briSlider.value = Math.round(wv * 100);
+        const fullColor = cpRgbToHex(...cpHsvToRgb(wh, ws, 1));
+        briSlider.style.background = `linear-gradient(to right, #000000, ${fullColor})`;
+        return hex;
+    };
+    const applyWheelColor = (isLive) => onSelect(syncWheelUI(), isLive);
+    syncWheelUI();
+
+    let dragging = false;
+    const updateFromWheelEvent = (e) => {
+        const rect = wheelCanvas.getBoundingClientRect();
+        [wh, ws] = cpWheelHS(e.clientX - rect.left, e.clientY - rect.top, wheelSize);
+        applyWheelColor(true);
+    };
+    wheelCanvas.addEventListener("pointerdown", e => {
+        e.preventDefault();
+        dragging = true;
+        wheelCanvas.setPointerCapture?.(e.pointerId);
+        updateFromWheelEvent(e);
+    });
+    wheelCanvas.addEventListener("pointermove", e => { if (dragging) updateFromWheelEvent(e); });
+    wheelCanvas.addEventListener("pointerup", () => { if (dragging) { dragging = false; applyWheelColor(false); } });
+
+    briSlider.addEventListener("input", () => { wv = briSlider.value / 100; applyWheelColor(true); });
+    briSlider.addEventListener("change", () => applyWheelColor(false));
+
+    hexInput.addEventListener("input", () => {
+        const clean = hexInput.value.replace(/[^0-9a-fA-F]/g, "").slice(0, 6);
+        if (clean.length === 6) {
+            [wh, ws, wv] = cpRgbToHsv(...cpHexToRgb("#" + clean));
+            applyWheelColor(true);
+        }
+    });
+    hexInput.addEventListener("change", () => {
+        const clean = hexInput.value.replace(/[^0-9a-fA-F]/g, "").padEnd(6, "0").slice(0, 6);
+        [wh, ws, wv] = cpRgbToHsv(...cpHexToRgb("#" + clean));
+        applyWheelColor(false);
+    });
+    hexInput.addEventListener("keydown", e => { if (e.key === "Enter") hexInput.blur(); });
+
+    eyeBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        startCanvasEyedropper((hex) => {
+            [wh, ws, wv] = cpRgbToHsv(...cpHexToRgb(hex));
+            applyWheelColor(false);
+        });
+    });
+
+    document.body.appendChild(popup);
+    const ar = anchor.getBoundingClientRect(), pr = popup.getBoundingClientRect();
+    let top = ar.top - 6, left = ar.right + 8;
+    if (left + pr.width > window.innerWidth - 8) left = ar.left - pr.width - 8;
+    if (left < 4) left = Math.min(ar.left, window.innerWidth - pr.width - 8);
+    if (top + pr.height > window.innerHeight - 8) top = window.innerHeight - pr.height - 8;
+    popup.style.left = Math.max(4, left) + "px";
+    popup.style.top = Math.max(4, top) + "px";
+    return popup;
 }
 
 function _buildCpPopup(anchor, curColor, onSelect, { allowNone = false } = {}) {
@@ -9720,16 +10588,13 @@ function _buildCpPopup(anchor, curColor, onSelect, { allowNone = false } = {}) {
     }
 
     const mb = document.createElement("button"); mb.className = "cp-action-row";
-    mb.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="5.5" fill="none" stroke="#666" stroke-width="1.5"/><circle cx="5.5" cy="8" r="1.2" fill="#e44"/><circle cx="8" cy="8" r="1.2" fill="#4b4"/><circle cx="10.5" cy="8" r="1.2" fill="#44d"/></svg> More Colors…`;
+    mb.innerHTML = `<svg viewBox="0 0 16 16" width="14" height="14"><circle cx="8" cy="8" r="5.5" fill="none" stroke="#666" stroke-width="1.5"/><circle cx="5.5" cy="8" r="1.2" fill="#e44"/><circle cx="8" cy="8" r="1.2" fill="#4b4"/><circle cx="10.5" cy="8" r="1.2" fill="#44d"/></svg> More Colours…`;
+    mb.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (_cpWheelPopup) { _cpWheelPopup.remove(); _cpWheelPopup = null; return; }
+        _cpWheelPopup = _buildCpWheelPopup(mb, curColor, onSelect);
+    });
     popup.appendChild(mb);
-
-    const ni = document.createElement("input"); ni.type = "color";
-    ni.value = (!curColor || curColor === "none") ? "#000000" : curColor;
-    ni.style.cssText = "position:absolute;visibility:hidden;width:0;height:0;";
-    ni.addEventListener("input", () => onSelect(ni.value, true));
-    ni.addEventListener("change", () => { onSelect(ni.value, false); _closeColorPicker(); });
-    popup.appendChild(ni);
-    mb.addEventListener("click", () => ni.click());
 
     document.body.appendChild(popup);
     const ar = anchor.getBoundingClientRect(), pr = popup.getBoundingClientRect();
@@ -9740,7 +10605,10 @@ function _buildCpPopup(anchor, curColor, onSelect, { allowNone = false } = {}) {
     popup.style.top = Math.max(4, top) + "px";
 
     const onOut = (e) => {
-        if (!popup.contains(e.target) && e.target !== anchor) { _closeColorPicker(); document.removeEventListener("mousedown", onOut, true); }
+        if (!popup.contains(e.target) && e.target !== anchor && !(_cpWheelPopup && _cpWheelPopup.contains(e.target))) {
+            _closeColorPicker();
+            document.removeEventListener("mousedown", onOut, true);
+        }
     };
     setTimeout(() => document.addEventListener("mousedown", onOut, true), 0);
     return popup;
@@ -10201,7 +11069,7 @@ function syncShapeRibbonMenus() {
 
     // Shadow
     document.getElementById("sfShadowEnable").checked = !!obj.shadow;
-    document.getElementById("sfShadowColor").value = obj.shadowColor || "#000000";
+    sfShadowColorBtn._setValue(obj.shadowColor || "#000000");
     const sfShadowBlur = document.getElementById("sfShadowBlur"); sfShadowBlur.value = obj.shadowBlur ?? 4; document.getElementById("sfShadowBlurVal").textContent = sfShadowBlur.value;
     const sfShadowDist = document.getElementById("sfShadowDist"); sfShadowDist.value = obj.shadowDistance ?? 4; document.getElementById("sfShadowDistVal").textContent = sfShadowDist.value;
     const sfShadowAngle = document.getElementById("sfShadowAngle"); sfShadowAngle.value = obj.shadowAngle ?? 45; document.getElementById("sfShadowAngleVal").textContent = sfShadowAngle.value + "°";
@@ -10209,7 +11077,7 @@ function syncShapeRibbonMenus() {
 
     // Inner Shadow
     document.getElementById("sfInnerShadowEnable").checked = !!obj.innerShadow;
-    document.getElementById("sfInnerShadowColor").value = obj.innerShadowColor || "#000000";
+    sfInnerShadowColorBtn._setValue(obj.innerShadowColor || "#000000");
     const sfISBlur = document.getElementById("sfInnerShadowBlur"); sfISBlur.value = obj.innerShadowBlur ?? 4; document.getElementById("sfInnerShadowBlurVal").textContent = sfISBlur.value;
     const sfISDist = document.getElementById("sfInnerShadowDist"); sfISDist.value = obj.innerShadowDistance ?? 4; document.getElementById("sfInnerShadowDistVal").textContent = sfISDist.value;
     const sfISAngle = document.getElementById("sfInnerShadowAngle"); sfISAngle.value = obj.innerShadowAngle ?? 135; document.getElementById("sfInnerShadowAngleVal").textContent = sfISAngle.value + "°";
@@ -10217,7 +11085,7 @@ function syncShapeRibbonMenus() {
 
     // Glow
     document.getElementById("sfGlowEnable").checked = !!obj.glow;
-    document.getElementById("sfGlowColor").value = obj.glowColor || "#65c8d6";
+    sfGlowColorBtn._setValue(obj.glowColor || "#65c8d6");
     const sfGlowSize = document.getElementById("sfGlowSize"); sfGlowSize.value = obj.glowSize ?? 6; document.getElementById("sfGlowSizeVal").textContent = sfGlowSize.value;
     const sfGlowOpacity = document.getElementById("sfGlowOpacity"); sfGlowOpacity.value = obj.glowOpacity ?? 85; document.getElementById("sfGlowOpacityVal").textContent = sfGlowOpacity.value + "%";
 
@@ -10274,11 +11142,11 @@ document.getElementById("sfShadowEnable").onchange = () => {
     const v = document.getElementById("sfShadowEnable").checked;
     pushHistory(true); applyToAll(targets, o => o.shadow = v); render(); updateShapeRibbonControls(targets);
 };
-document.getElementById("sfShadowColor").oninput = () => {
+const sfShadowColorBtn = makeColorPickerBtn("#000000", c => {
     const targets = shapeStyleTargets(); if (!targets.length) return;
-    applyToAll(targets, o => o.shadowColor = document.getElementById("sfShadowColor").value); render();
-};
-document.getElementById("sfShadowColor").onchange = () => pushHistory(true);
+    applyToAll(targets, o => o.shadowColor = c); render();
+}, { onCommit: () => pushHistory(true) });
+document.getElementById("sfShadowColor").appendChild(sfShadowColorBtn);
 ["sfShadowBlur","sfShadowDist","sfShadowAngle","sfShadowOpacity"].forEach(id => {
     const el2 = document.getElementById(id);
     const valId = id + "Val";
@@ -10312,11 +11180,11 @@ document.getElementById("sfInnerShadowEnable").onchange = () => {
     const v = document.getElementById("sfInnerShadowEnable").checked;
     pushHistory(true); applyToAll(targets, o => o.innerShadow = v); render(); updateShapeRibbonControls(targets);
 };
-document.getElementById("sfInnerShadowColor").oninput = () => {
+const sfInnerShadowColorBtn = makeColorPickerBtn("#000000", c => {
     const targets = shapeStyleTargets(); if (!targets.length) return;
-    applyToAll(targets, o => o.innerShadowColor = document.getElementById("sfInnerShadowColor").value); render();
-};
-document.getElementById("sfInnerShadowColor").onchange = () => pushHistory(true);
+    applyToAll(targets, o => o.innerShadowColor = c); render();
+}, { onCommit: () => pushHistory(true) });
+document.getElementById("sfInnerShadowColor").appendChild(sfInnerShadowColorBtn);
 ["sfInnerShadowBlur","sfInnerShadowDist","sfInnerShadowAngle","sfInnerShadowOpacity"].forEach(id => {
     const el2 = document.getElementById(id);
     const valId = id + "Val";
@@ -10337,11 +11205,11 @@ document.getElementById("sfGlowEnable").onchange = () => {
     const v = document.getElementById("sfGlowEnable").checked;
     pushHistory(true); applyToAll(targets, o => o.glow = v); render(); updateShapeRibbonControls(targets);
 };
-document.getElementById("sfGlowColor").oninput = () => {
+const sfGlowColorBtn = makeColorPickerBtn("#65c8d6", c => {
     const targets = shapeStyleTargets(); if (!targets.length) return;
-    applyToAll(targets, o => o.glowColor = document.getElementById("sfGlowColor").value); render();
-};
-document.getElementById("sfGlowColor").onchange = () => pushHistory(true);
+    applyToAll(targets, o => o.glowColor = c); render();
+}, { onCommit: () => pushHistory(true) });
+document.getElementById("sfGlowColor").appendChild(sfGlowColorBtn);
 ["sfGlowSize","sfGlowOpacity"].forEach(id => {
     const el2 = document.getElementById(id);
     const valId = id + "Val";
@@ -10461,15 +11329,18 @@ shapeRotateRightBtn.onclick = () => {
 
 // ============ Text Effects tab ============
 const textEffectsTab = document.getElementById("textEffectsTab");
-const txTextColorInput = document.getElementById("txTextColorInput");
+const txTextColorBtn = makeColorPickerBtn("#000000", c => applyToTextTargetsLive(o => o.fontColor = c), { onCommit: () => pushHistory(true) });
+document.getElementById("txTextColorInput").appendChild(txTextColorBtn);
 const txLetterSpacing = document.getElementById("txLetterSpacing");
 const txLetterSpacingVal = document.getElementById("txLetterSpacingVal");
 const txOutlineEnable = document.getElementById("txOutlineEnable");
-const txOutlineColor = document.getElementById("txOutlineColor");
+const txOutlineColorBtn = makeColorPickerBtn("#000000", c => applyToTextTargetsLive(o => o.textOutlineColor = c), { onCommit: () => pushHistory(true) });
+document.getElementById("txOutlineColor").appendChild(txOutlineColorBtn);
 const txOutlineWidth = document.getElementById("txOutlineWidth");
 const txOutlineWidthVal = document.getElementById("txOutlineWidthVal");
 const txShadowEnable = document.getElementById("txShadowEnable");
-const txShadowColor = document.getElementById("txShadowColor");
+const txShadowColorBtn = makeColorPickerBtn("#000000", c => applyToTextTargetsLive(o => o.textShadowColor = c), { onCommit: () => pushHistory(true) });
+document.getElementById("txShadowColor").appendChild(txShadowColorBtn);
 const txShadowBlur = document.getElementById("txShadowBlur");
 const txShadowBlurVal = document.getElementById("txShadowBlurVal");
 const txShadowDist = document.getElementById("txShadowDist");
@@ -10479,7 +11350,8 @@ const txShadowAngleVal = document.getElementById("txShadowAngleVal");
 const txShadowOpacity = document.getElementById("txShadowOpacity");
 const txShadowOpacityVal = document.getElementById("txShadowOpacityVal");
 const txGlowEnable = document.getElementById("txGlowEnable");
-const txGlowColor = document.getElementById("txGlowColor");
+const txGlowColorBtn = makeColorPickerBtn("#65c8d6", c => applyToTextTargetsLive(o => o.textGlowColor = c), { onCommit: () => pushHistory(true) });
+document.getElementById("txGlowColor").appendChild(txGlowColorBtn);
 const txGlowSize = document.getElementById("txGlowSize");
 const txGlowSizeVal = document.getElementById("txGlowSizeVal");
 const txGlowOpacity = document.getElementById("txGlowOpacity");
@@ -10497,17 +11369,17 @@ function updateTextEffectsTab() {
     if (!targets.length) return;
     const obj = targets[0];
 
-    txTextColorInput.value = obj.fontColor || "#000000";
+    txTextColorBtn._setValue(obj.fontColor || "#000000");
     txLetterSpacing.value = obj.letterSpacing ?? 0;
     txLetterSpacingVal.textContent = (obj.letterSpacing ?? 0) + "px";
 
     txOutlineEnable.checked = !!obj.textOutline;
-    txOutlineColor.value = obj.textOutlineColor || "#000000";
+    txOutlineColorBtn._setValue(obj.textOutlineColor || "#000000");
     txOutlineWidth.value = obj.textOutlineWidth ?? 1;
     txOutlineWidthVal.textContent = (obj.textOutlineWidth ?? 1) + "px";
 
     txShadowEnable.checked = !!obj.textShadow;
-    txShadowColor.value = obj.textShadowColor || "#000000";
+    txShadowColorBtn._setValue(obj.textShadowColor || "#000000");
     txShadowBlur.value = obj.textShadowBlur ?? 4;
     txShadowBlurVal.textContent = obj.textShadowBlur ?? 4;
     txShadowDist.value = obj.textShadowDistance ?? 2;
@@ -10518,7 +11390,7 @@ function updateTextEffectsTab() {
     txShadowOpacityVal.textContent = (obj.textShadowOpacity ?? 55) + "%";
 
     txGlowEnable.checked = !!obj.textGlow;
-    txGlowColor.value = obj.textGlowColor || "#65c8d6";
+    txGlowColorBtn._setValue(obj.textGlowColor || "#65c8d6");
     txGlowSize.value = obj.textGlowSize ?? 6;
     txGlowSizeVal.textContent = obj.textGlowSize ?? 6;
     txGlowOpacity.value = obj.textGlowOpacity ?? 85;
@@ -10535,8 +11407,6 @@ function applyToTextTargetsLive(fn) {
     render();
 }
 
-txTextColorInput.oninput = () => applyToTextSelection(o => { o.fontColor = txTextColorInput.value; });
-
 txLetterSpacing.oninput = () => {
     txLetterSpacingVal.textContent = txLetterSpacing.value + "px";
     applyToTextTargetsLive(o => o.letterSpacing = parseFloat(txLetterSpacing.value));
@@ -10544,8 +11414,6 @@ txLetterSpacing.oninput = () => {
 txLetterSpacing.onchange = () => pushHistory(true);
 
 txOutlineEnable.onchange = () => applyToTextSelection(o => o.textOutline = txOutlineEnable.checked);
-txOutlineColor.oninput = () => applyToTextTargetsLive(o => o.textOutlineColor = txOutlineColor.value);
-txOutlineColor.onchange = () => pushHistory(true);
 txOutlineWidth.oninput = () => {
     txOutlineWidthVal.textContent = txOutlineWidth.value + "px";
     applyToTextTargetsLive(o => o.textOutlineWidth = parseFloat(txOutlineWidth.value));
@@ -10553,8 +11421,6 @@ txOutlineWidth.oninput = () => {
 txOutlineWidth.onchange = () => pushHistory(true);
 
 txShadowEnable.onchange = () => applyToTextSelection(o => o.textShadow = txShadowEnable.checked);
-txShadowColor.oninput = () => applyToTextTargetsLive(o => o.textShadowColor = txShadowColor.value);
-txShadowColor.onchange = () => pushHistory(true);
 txShadowBlur.oninput = () => {
     txShadowBlurVal.textContent = txShadowBlur.value;
     applyToTextTargetsLive(o => o.textShadowBlur = parseInt(txShadowBlur.value));
@@ -10577,8 +11443,6 @@ txShadowOpacity.oninput = () => {
 txShadowOpacity.onchange = () => pushHistory(true);
 
 txGlowEnable.onchange = () => applyToTextSelection(o => o.textGlow = txGlowEnable.checked);
-txGlowColor.oninput = () => applyToTextTargetsLive(o => o.textGlowColor = txGlowColor.value);
-txGlowColor.onchange = () => pushHistory(true);
 txGlowSize.oninput = () => {
     txGlowSizeVal.textContent = txGlowSize.value;
     applyToTextTargetsLive(o => o.textGlowSize = parseInt(txGlowSize.value));
@@ -10652,11 +11516,11 @@ function updateFormatPictureTab() {
     syncSlider("picNoiseColorSlider", "picNoiseColorVal", obj.imgNoiseColor, v => v);
     document.getElementById("picOpacitySlider").value = obj.opacity ?? 100;
     document.getElementById("picOpacityVal").textContent = (obj.opacity ?? 100) + "%";
-    document.getElementById("picBorderColorInput").value = obj.picBorderColor || "#000000";
+    picBorderColorBtn._setValue(obj.picBorderColor || "#000000");
     document.getElementById("picBorderWidthSlider").value = obj.picBorderWidth ?? 0;
     document.getElementById("picBorderWidthVal").textContent = (obj.picBorderWidth ?? 0) + "px";
     document.getElementById("picShadowEnable").checked = !!obj.shadow;
-    document.getElementById("picShadowColor").value = obj.shadowColor || "#000000";
+    picShadowColorBtn._setValue(obj.shadowColor || "#000000");
     document.getElementById("picShadowBlur").value = obj.shadowBlur ?? 8;
     document.getElementById("picShadowBlurVal").textContent = obj.shadowBlur ?? 8;
     document.getElementById("picShadowDist").value = obj.shadowDistance ?? 4;
@@ -10665,13 +11529,13 @@ function updateFormatPictureTab() {
     document.getElementById("picSoftEdgeSize").value = obj.softEdgeSize ?? 10;
     document.getElementById("picSoftEdgeSizeVal").textContent = obj.softEdgeSize ?? 10;
     document.getElementById("picInnerShadowEnable").checked = !!obj.innerShadow;
-    document.getElementById("picInnerShadowColor").value = obj.innerShadowColor || "#000000";
+    picInnerShadowColorBtn._setValue(obj.innerShadowColor || "#000000");
     document.getElementById("picInnerShadowBlur").value = obj.innerShadowBlur ?? 4;
     document.getElementById("picInnerShadowBlurVal").textContent = obj.innerShadowBlur ?? 4;
     document.getElementById("picInnerShadowDist").value = obj.innerShadowDistance ?? 4;
     document.getElementById("picInnerShadowDistVal").textContent = obj.innerShadowDistance ?? 4;
     document.getElementById("picGlowEnable").checked = !!obj.glow;
-    document.getElementById("picGlowColor").value = obj.glowColor || "#65c8d6";
+    picGlowColorBtn._setValue(obj.glowColor || "#65c8d6");
     document.getElementById("picGlowSize").value = obj.glowSize ?? 6;
     document.getElementById("picGlowSizeVal").textContent = obj.glowSize ?? 6;
     document.getElementById("picReflectionEnable").checked = !!obj.reflection;
@@ -10954,14 +11818,11 @@ document.getElementById("picResetSizeBtn").addEventListener("click", () => {
 });
 
 // ---- Picture Styles: Border ----
-const picBorderColorInput = document.getElementById("picBorderColorInput");
 const picBorderWidthSlider = document.getElementById("picBorderWidthSlider");
 const picBorderWidthVal = document.getElementById("picBorderWidthVal");
 
-picBorderColorInput.oninput = () => {
-    applyToPicTargetsLive(o => o.picBorderColor = picBorderColorInput.value);
-};
-picBorderColorInput.onchange = () => pushHistory(true);
+const picBorderColorBtn = makeColorPickerBtn("#000000", c => applyToPicTargetsLive(o => o.picBorderColor = c), { onCommit: () => pushHistory(true) });
+document.getElementById("picBorderColorInput").appendChild(picBorderColorBtn);
 
 picBorderWidthSlider.oninput = () => {
     picBorderWidthVal.textContent = picBorderWidthSlider.value + "px";
@@ -11009,10 +11870,8 @@ document.getElementById("picShadowEnable").addEventListener("change", (e) => {
         }
     });
 });
-document.getElementById("picShadowColor").addEventListener("input", (e) => {
-    applyToPicTargetsLive(o => o.shadowColor = e.target.value);
-});
-document.getElementById("picShadowColor").addEventListener("change", () => pushHistory(true));
+const picShadowColorBtn = makeColorPickerBtn("#000000", c => applyToPicTargetsLive(o => o.shadowColor = c), { onCommit: () => pushHistory(true) });
+document.getElementById("picShadowColor").appendChild(picShadowColorBtn);
 document.getElementById("picShadowBlur").addEventListener("input", (e) => {
     document.getElementById("picShadowBlurVal").textContent = e.target.value;
     applyToPicTargetsLive(o => o.shadowBlur = parseInt(e.target.value));
@@ -11027,10 +11886,8 @@ document.getElementById("picShadowDist").addEventListener("change", () => pushHi
 document.getElementById("picInnerShadowEnable").addEventListener("change", (e) => {
     applyToPicTargets(o => { o.innerShadow = e.target.checked; });
 });
-document.getElementById("picInnerShadowColor").addEventListener("input", (e) => {
-    applyToPicTargetsLive(o => o.innerShadowColor = e.target.value);
-});
-document.getElementById("picInnerShadowColor").addEventListener("change", () => pushHistory(true));
+const picInnerShadowColorBtn = makeColorPickerBtn("#000000", c => applyToPicTargetsLive(o => o.innerShadowColor = c), { onCommit: () => pushHistory(true) });
+document.getElementById("picInnerShadowColor").appendChild(picInnerShadowColorBtn);
 document.getElementById("picInnerShadowBlur").addEventListener("input", (e) => {
     document.getElementById("picInnerShadowBlurVal").textContent = e.target.value;
     applyToPicTargetsLive(o => o.innerShadowBlur = parseInt(e.target.value));
@@ -11050,10 +11907,8 @@ document.getElementById("picGlowEnable").addEventListener("change", (e) => {
         }
     });
 });
-document.getElementById("picGlowColor").addEventListener("input", (e) => {
-    applyToPicTargetsLive(o => o.glowColor = e.target.value);
-});
-document.getElementById("picGlowColor").addEventListener("change", () => pushHistory(true));
+const picGlowColorBtn = makeColorPickerBtn("#65c8d6", c => applyToPicTargetsLive(o => o.glowColor = c), { onCommit: () => pushHistory(true) });
+document.getElementById("picGlowColor").appendChild(picGlowColorBtn);
 document.getElementById("picGlowSize").addEventListener("input", (e) => {
     document.getElementById("picGlowSizeVal").textContent = e.target.value;
     applyToPicTargetsLive(o => o.glowSize = parseInt(e.target.value));
@@ -13012,23 +13867,27 @@ updateSlideSizeControls();
 // ============ Design tab: Themes ============
 // Each theme sets the slide background fill (applied to every slide) and the
 // app header's accent color, giving the deck a consistent look in one click.
+// textColor is used only for the gallery swatch's mock title/body lines, so
+// the preview is legible against light or dark backgrounds alike.
 const SLIDE_THEMES = [
-    { id: "default", name: "Default", fill: { type: "solid", color: "#ffffff" }, headerColor: "#2fa0b0" },
-    { id: "sunrise", name: "Sunrise", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#fff5e6" }, { pos: 100, color: "#ffd9a0" }] }, headerColor: "#e8943a" },
-    { id: "ocean", name: "Ocean", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#e6f4f9" }, { pos: 100, color: "#aee0ef" }] }, headerColor: "#2fa0b0" },
-    { id: "blossom", name: "Blossom", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#fff0f5" }, { pos: 100, color: "#ffd0e0" }] }, headerColor: "#d6577a" },
-    { id: "mint", name: "Mint", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#eafff2" }, { pos: 100, color: "#b9f0d0" }] }, headerColor: "#2fae7a" },
-    { id: "lavender", name: "Lavender", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#f3eefc" }, { pos: 100, color: "#d8c8f5" }] }, headerColor: "#7a5fc4" },
-    { id: "slate", name: "Slate", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#f4f6f8" }, { pos: 100, color: "#cfd6dd" }] }, headerColor: "#5c6b7a" },
-    { id: "charcoal", name: "Charcoal", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#3a3f47" }, { pos: 100, color: "#20242b" }] }, headerColor: "#4a5568" },
-    { id: "crimson", name: "Crimson", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#fff5f5" }, { pos: 100, color: "#ffd6d6" }] }, headerColor: "#c0392b" },
-    { id: "royal", name: "Royal", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#eef0fb" }, { pos: 100, color: "#c8d0f0" }] }, headerColor: "#34495e" },
-    { id: "gold", name: "Gold", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#fffaf0" }, { pos: 100, color: "#ffe9b3" }] }, headerColor: "#b8860b" },
-    { id: "sky", name: "Sky", fill: { type: "solid", color: "#eaf6ff" }, headerColor: "#3498db" },
-    { id: "coral", name: "Coral", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#fff4f0" }, { pos: 100, color: "#ffd0c2" }] }, headerColor: "#e8674a" },
-    { id: "sage", name: "Sage", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#f3f7f0" }, { pos: 100, color: "#d6e6cf" }] }, headerColor: "#6f9a5c" },
-    { id: "plum", name: "Plum", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#f8f0fb" }, { pos: 100, color: "#e3c9f0" }] }, headerColor: "#8e44ad" },
-    { id: "graphite", name: "Graphite", fill: { type: "solid", color: "#f0f1f3" }, headerColor: "#34495e" },
+    { id: "default",         name: "Default",         fill: { type: "solid", color: "#ffffff" }, headerColor: "#2fa0b0", textColor: "#1a1a1a" },
+    { id: "sunrise-blush",   name: "Sunrise Blush",   fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#fff5e6" }, { pos: 100, color: "#ffd9c2" }] }, headerColor: "#e8814a", textColor: "#5c3a26" },
+    { id: "sky-mist",        name: "Sky Mist",        fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#eaf6ff" }, { pos: 100, color: "#cfe9fb" }] }, headerColor: "#2196c9", textColor: "#1c3d52" },
+    { id: "rose-quartz",     name: "Rose Quartz",     fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#fff0f3" }, { pos: 100, color: "#ffd6e0" }] }, headerColor: "#d6477d", textColor: "#5c2436" },
+    { id: "sage-garden",     name: "Sage Garden",     fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#f3f8ed" }, { pos: 100, color: "#d9ebc7" }] }, headerColor: "#4f8a3f", textColor: "#2e4a23" },
+    { id: "lavender-dusk",   name: "Lavender Dusk",   fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#f5f0fb" }, { pos: 100, color: "#ddd0f0" }] }, headerColor: "#7b4fb3", textColor: "#3a2a52" },
+    { id: "seafoam",         name: "Seafoam",         fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#effaf7" }, { pos: 100, color: "#c8ecdf" }] }, headerColor: "#1fa085", textColor: "#114438" },
+    { id: "peach-sorbet",    name: "Peach Sorbet",    fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#fff6ee" }, { pos: 100, color: "#ffe1c2" }] }, headerColor: "#ee7d4f", textColor: "#6b3c1f" },
+    { id: "citrus-pop",      name: "Citrus Pop",      fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#fffbe6" }, { pos: 100, color: "#fde79a" }] }, headerColor: "#d99a1e", textColor: "#5a4006" },
+    { id: "cloud-gray",      name: "Cloud Gray",      fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#f7f8fa" }, { pos: 100, color: "#e2e6ec" }] }, headerColor: "#5b6b86", textColor: "#2b3445" },
+    { id: "midnight-aurora", name: "Midnight Aurora", fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#0f1c3f" }, { pos: 100, color: "#1b2a5e" }] }, headerColor: "#2dd4bf", textColor: "#ffffff" },
+    { id: "espresso-gold",   name: "Espresso Gold",   fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#2b1d14" }, { pos: 100, color: "#1a120b" }] }, headerColor: "#d9a445", textColor: "#f5e6cf" },
+    { id: "deep-ocean",      name: "Deep Ocean",      fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#073042" }, { pos: 100, color: "#0a4f63" }] }, headerColor: "#34d6e0", textColor: "#ffffff" },
+    { id: "royal-velvet",    name: "Royal Velvet",    fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#2c1250" }, { pos: 100, color: "#4a1942" }] }, headerColor: "#e0b84a", textColor: "#f3e9ff" },
+    { id: "emerald-noir",    name: "Emerald Noir",    fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#0b2e25" }, { pos: 100, color: "#14241b" }] }, headerColor: "#34c98f", textColor: "#ffffff" },
+    { id: "berry-bliss",     name: "Berry Bliss",     fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#4a0f3d" }, { pos: 100, color: "#7c1f6b" }] }, headerColor: "#ff5fa2", textColor: "#ffffff" },
+    { id: "graphite",        name: "Graphite",        fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#2a2d34" }, { pos: 100, color: "#15171b" }] }, headerColor: "#8ad6e0", textColor: "#ffffff" },
+    { id: "crimson-ember",   name: "Crimson Ember",   fill: { type: "gradient", gradientType: "linear", angle: 135, stops: [{ pos: 0, color: "#3a0d0d" }, { pos: 100, color: "#6b1414" }] }, headerColor: "#ff7a59", textColor: "#ffe9e3" },
 ];
 
 function themeSwatchBackground(theme) {
@@ -13037,6 +13896,9 @@ function themeSwatchBackground(theme) {
     return `linear-gradient(${theme.fill.angle}deg, ${stops})`;
 }
 
+// Each swatch is a tiny mock slide (title bar + two body lines + an accent
+// dot) rendered in the theme's own colors, rather than a flat color square —
+// it actually previews what a slide would look like, not just its background.
 function renderThemesGallery() {
     const gallery = document.getElementById("themesGallery");
     gallery.innerHTML = "";
@@ -13046,8 +13908,16 @@ function renderThemesGallery() {
         if (JSON.stringify(curSlide().fill) === JSON.stringify(theme.fill)) {
             swatch.classList.add("active");
         }
+        const title = el("div", { class: "theme-swatch-title" });
+        title.style.background = theme.textColor;
+        const line1 = el("div", { class: "theme-swatch-line theme-swatch-line1" });
+        line1.style.background = theme.textColor;
+        const line2 = el("div", { class: "theme-swatch-line theme-swatch-line2" });
+        line2.style.background = theme.textColor;
+        const dot = el("div", { class: "theme-swatch-dot" });
+        dot.style.background = theme.headerColor;
         const check = el("span", { class: "theme-swatch-check", text: "✓" });
-        swatch.appendChild(check);
+        swatch.append(title, line1, line2, dot, check);
         swatch.onclick = () => {
             pushHistory(true);
             state.slides.forEach(slide => { slide.fill = JSON.parse(JSON.stringify(theme.fill)); });
@@ -14466,11 +15336,10 @@ function applyHeaderColor(hex) {
     root.setProperty("--header-bg-light", hslToHex(h, s, Math.min(1, l + 0.13)));
     root.setProperty("--header-bg-dark", hslToHex(h, s, Math.max(0, l - 0.08)));
     root.setProperty("--header-border", hslToHex(h, s, Math.max(0, l - 0.13)));
-    document.getElementById("headerColorPicker").value = hex;
+    headerColorBtn._setValue(hex);
 }
-document.getElementById("headerColorPicker").addEventListener("input", (e) => {
-    applyHeaderColor(e.target.value);
-});
+const headerColorBtn = makeColorPickerBtn("#65c8d6", applyHeaderColor);
+document.getElementById("headerColorPicker").appendChild(headerColorBtn);
 
 // ============ Init ============
 render();
