@@ -674,6 +674,7 @@ function render() {
 
     const slide = curSlide();
     const bg = document.createElementNS(svgNS, "rect");
+    bg.id = "slideBgRect";
     bg.setAttribute("x", 0); bg.setAttribute("y", 0);
     bg.setAttribute("width", SLIDE_W); bg.setAttribute("height", SLIDE_H);
     bg.setAttribute("fill", resolveFill(slide, defs));
@@ -723,7 +724,7 @@ const canvasArea = document.querySelector(".canvas-area");
 
 // clicking the gray pasteboard area around the slide (outside the svg):
 // in select mode, start a marquee drag; otherwise just deselect
-canvasArea.addEventListener("mousedown", (e) => {
+canvasArea.addEventListener("pointerdown", (e) => {
     closeAllDropdowns();
     closeTextContextMenu();
     if (e.target === canvasArea || e.target.classList.contains("canvas-pad") || e.target === canvasWrap) {
@@ -1865,15 +1866,24 @@ function buildToneTable(blacks, shadows, highlights, whites) {
 const _imgOrigCache = new Map();      // src -> {W,H,data:Uint8ClampedArray}
 const _imgOrigLoading = new Map();    // src -> [callbacks] while decoding
 const _imgProcessedCache = new Map(); // obj.id -> {sig, url}
-const _imgDebounce = new Map();       // obj.id -> timeoutId
+const _imgDebounce = new Map();       // obj.id -> pending requestAnimationFrame id
 
 function imgAdjustActive(obj) {
     return !!(obj.imgTemperature || obj.imgTint || obj.imgHighlights || obj.imgShadows ||
-              obj.imgWhites || obj.imgBlacks || obj.imgClarity || obj.imgVibrance || obj.imgNoise);
+              obj.imgWhites || obj.imgBlacks || obj.imgClarity || obj.imgVibrance ||
+              obj.imgNoise || obj.imgNoiseColor || (obj.masks && obj.masks.length));
+}
+// Excludes each mask's _weightCache (a Float32Array, not meaningfully
+// JSON-serializable and not needed here — its *source* params already
+// changing is what should invalidate the cache).
+function maskSignature(masks) {
+    if (!masks || !masks.length) return "";
+    return JSON.stringify(masks.map(({ _weightCache, ...rest }) => rest));
 }
 function imgAdjustSignature(obj) {
     return [obj.imgTemperature, obj.imgTint, obj.imgHighlights, obj.imgShadows, obj.imgWhites,
-            obj.imgBlacks, obj.imgClarity, obj.imgVibrance, obj.imgNoise].map(v => v || 0).join(",");
+            obj.imgBlacks, obj.imgClarity, obj.imgVibrance, obj.imgNoise, obj.imgNoiseColor].map(v => v || 0).join(",")
+        + "|" + maskSignature(obj.masks);
 }
 
 function getOrigImagePixels(src, onReady) {
@@ -1958,123 +1968,416 @@ function hslToRgb(h, s, l) {
 // Run the real per-pixel pipeline over a copy of the original pixel buffer.
 // Order matches a real editing workflow: white balance -> tone -> clarity ->
 // vibrance -> noise reduction.
+// White balance + tone curve, in one pass since both act on the same r/g/b
+// per pixel — extracted verbatim from the old inline processImagePixels body
+// so the global pass (called with the object's own imgX properties) keeps
+// producing byte-identical output, while masks can call the exact same
+// function with a *mask's own* adjustment values.
+function applyWhiteBalanceAndTone(buf, n, temperature, tint, blacks, shadows, highlights, whites) {
+    const t = (temperature || 0) / 100, tt = (tint || 0) / 100;
+    const wbActive = !!(temperature || tint);
+    const rGain = Math.max(0.5, Math.min(1.6, 1 + t * 0.30 + tt * 0.12));
+    const gGain = Math.max(0.5, Math.min(1.6, 1 - tt * 0.18));
+    const bGain = Math.max(0.5, Math.min(1.6, 1 - t * 0.30 + tt * 0.12));
+
+    const toneActive = !!(highlights || shadows || whites || blacks);
+    let toneLUT = null;
+    if (toneActive) {
+        const curve = buildToneTable(blacks, shadows, highlights, whites);
+        toneLUT = new Float32Array(17);
+        for (let i = 0; i < 17; i++) toneLUT[i] = curve[i];
+    }
+    if (!wbActive && !toneActive) return;
+
+    for (let i = 0; i < n; i++) {
+        const p = i * 4;
+        let r = buf[p], g = buf[p + 1], b = buf[p + 2];
+        if (wbActive) { r *= rGain; g *= gGain; b *= bGain; }
+        if (toneActive) {
+            const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+            if (luma < 1) {
+                const target = toneLUT[0] * 255;
+                r = target; g = target; b = target;
+            } else {
+                const x = Math.min(1, luma / 255) * 16;
+                const seg = Math.min(15, Math.floor(x));
+                const frac = x - seg;
+                const y = toneLUT[seg] + (toneLUT[seg + 1] - toneLUT[seg]) * frac;
+                const factor = (y * 255) / luma;
+                r *= factor; g *= factor; b *= factor;
+            }
+        }
+        buf[p] = r; buf[p + 1] = g; buf[p + 2] = b;
+    }
+}
+
+// Clarity — real local contrast: blur the LUMINANCE plane only, then push the
+// original luminance away from that blurred version and apply the same delta
+// to all 3 channels so colour/saturation stay untouched. Extracted verbatim
+// (same reasoning as applyWhiteBalanceAndTone above).
+function applyClarityPass(buf, W, H, n, clarityAmt) {
+    if (!clarityAmt) return;
+    const amt = (clarityAmt / 100) * 0.9;
+    const luma = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+        const p = i * 4;
+        luma[i] = 0.299 * buf[p] + 0.587 * buf[p + 1] + 0.114 * buf[p + 2];
+    }
+    const blurred = boxBlurPlane(luma, W, H, 8);
+    for (let i = 0; i < n; i++) {
+        const p = i * 4;
+        const delta = (luma[i] - blurred[i]) * amt;
+        buf[p] = buf[p] + delta;
+        buf[p + 1] = buf[p + 1] + delta;
+        buf[p + 2] = buf[p + 2] + delta;
+    }
+}
+
+// Real per-pixel saturation (HSL scale), used by masks — the global
+// Saturation slider stays a CSS filter (cheap, already correct) since it can
+// never be region-limited; masks need actual pixel data so they get a real
+// implementation here instead.
+function applySaturationPixels(buf, n, saturationPct) {
+    if (saturationPct === undefined || saturationPct === 100) return;
+    const factor = Math.max(0, saturationPct / 100);
+    for (let i = 0; i < n; i++) {
+        const p = i * 4;
+        const [h, s, l] = rgbToHsl(buf[p], buf[p + 1], buf[p + 2]);
+        const [r2, g2, b2] = hslToRgb(h, clamp01(s * factor), l);
+        buf[p] = r2; buf[p + 1] = g2; buf[p + 2] = b2;
+    }
+}
+
+// Real per-pixel Exposure/Contrast — masks need actual pixel math since they
+// can't fall back to the global sliders' cheap CSS filter (which can't be
+// region-limited).
+function applyExposureContrastPixels(buf, n, brightnessPct, contrastPct) {
+    const bFactor = (brightnessPct === undefined ? 100 : brightnessPct) / 100;
+    const cFactor = (contrastPct === undefined ? 100 : contrastPct) / 100;
+    if (bFactor === 1 && cFactor === 1) return;
+    for (let i = 0; i < n; i++) {
+        const p = i * 4;
+        for (let c = 0; c < 3; c++) {
+            buf[p + c] = (buf[p + c] * bFactor - 127.5) * cFactor + 127.5;
+        }
+    }
+}
+
+// Global Exposure/Contrast/Saturation/Hue/Soften/Artistic-preset are
+// genuinely correct as a single CSS `filter` string layered on top of the
+// already-processed bitmap (they're exactly representable as linear ops, so
+// there's no quality difference vs. doing them per-pixel — see the "image"
+// case in renderObject). Shared here so the Masking modal's preview canvas
+// can apply the *identical* filter to itself and visually stack correctly
+// with the rest of the pipeline, without baking any of this into the real
+// pixel buffer or touching the export path at all.
+function buildImgCssFilterString(obj) {
+    const imgFilters = [];
+
+    if (obj.imgBrightness !== undefined && obj.imgBrightness !== 100)
+        imgFilters.push(`brightness(${obj.imgBrightness / 100})`);
+    if (obj.imgContrast !== undefined && obj.imgContrast !== 100)
+        imgFilters.push(`contrast(${obj.imgContrast / 100})`);
+
+    if (obj.imgSaturation !== undefined && obj.imgSaturation !== 100)
+        imgFilters.push(`saturate(${obj.imgSaturation / 100})`);
+    if (obj.imgHue)
+        imgFilters.push(`hue-rotate(${obj.imgHue}deg)`);
+
+    if (obj.imgSharpen && obj.imgSharpen < 0)
+        imgFilters.push(`blur(${(Math.abs(obj.imgSharpen) * 0.35).toFixed(2)}px)`);
+
+    const artisticFilters = {
+        grayscale:    "grayscale(1)",
+        sepia:        "sepia(0.8)",
+        invert:       "invert(1)",
+        blur:         "blur(4px)",
+        vintage:      "sepia(0.45) contrast(0.88) brightness(0.92) saturate(1.3) hue-rotate(-5deg)",
+        cool:         "hue-rotate(22deg) saturate(1.15) brightness(1.05)",
+        warm:         "sepia(0.2) hue-rotate(-18deg) saturate(1.3) brightness(1.05)",
+        highcontrast: "contrast(2.2) brightness(0.88)",
+        pencil:       "grayscale(1) contrast(1.9) brightness(1.15)",
+        matte:        "contrast(0.85) brightness(1.1) saturate(0.8)",
+        fade:         "contrast(0.8) brightness(1.15) saturate(0.7) sepia(0.1)",
+        chrome:       "grayscale(0.3) contrast(1.4) brightness(1.1) saturate(1.5)",
+    };
+    if (obj.imgArtistic && artisticFilters[obj.imgArtistic])
+        imgFilters.push(artisticFilters[obj.imgArtistic]);
+
+    return imgFilters.join(" ");
+}
+
+// ── Local masking: per-pixel 0..1 weight for each of the 6 mask types ──────
+function computeMaskWeight(mask, W, H, buf) {
+    const n = W * H;
+    const weight = new Float32Array(n);
+    if (mask.visible === false) return weight;
+
+    switch (mask.type) {
+        case "linear": {
+            const X1 = mask.x1 * W, Y1 = mask.y1 * H, X2 = mask.x2 * W, Y2 = mask.y2 * H;
+            const dx = X2 - X1, dy = Y2 - Y1;
+            const len = Math.hypot(dx, dy) || 1;
+            const ux = dx / len, uy = dy / len;
+            const featherPx = Math.max(1, (mask.feather ?? 50) / 100 * len);
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    const proj = (x - X1) * ux + (y - Y1) * uy;
+                    weight[y * W + x] = clamp01(proj / featherPx);
+                }
+            }
+            break;
+        }
+        case "radial": {
+            const Cx = mask.cx * W, Cy = mask.cy * H;
+            const Rx = Math.max(1, mask.rx * W), Ry = Math.max(1, mask.ry * H);
+            const featherAmt = Math.max(0.001, (mask.feather ?? 50) / 100);
+            const innerR = 1 - featherAmt;
+            for (let y = 0; y < H; y++) {
+                for (let x = 0; x < W; x++) {
+                    const nx = (x - Cx) / Rx, ny = (y - Cy) / Ry;
+                    const dist = Math.sqrt(nx * nx + ny * ny);
+                    let w;
+                    if (dist <= innerR) w = 1;
+                    else if (dist >= 1) w = 0;
+                    else w = 1 - (dist - innerR) / (1 - innerR || 1);
+                    weight[y * W + x] = clamp01(w);
+                }
+            }
+            break;
+        }
+        case "color": {
+            const hex = (mask.color || "#ffffff").replace("#", "");
+            const cr = parseInt(hex.slice(0, 2), 16), cg = parseInt(hex.slice(2, 4), 16), cb = parseInt(hex.slice(4, 6), 16);
+            const tol = Math.max(1, (mask.range ?? 30) / 100 * 441.67);
+            const featherAmt = Math.max(1, (mask.feather ?? 50) / 100 * tol);
+            for (let i = 0; i < n; i++) {
+                const p = i * 4;
+                const dr = buf[p] - cr, dg = buf[p + 1] - cg, db = buf[p + 2] - cb;
+                const dist = Math.sqrt(dr * dr + dg * dg + db * db);
+                let w;
+                if (dist <= tol) w = 1;
+                else if (dist >= tol + featherAmt) w = 0;
+                else w = 1 - (dist - tol) / featherAmt;
+                weight[i] = w;
+            }
+            break;
+        }
+        case "luminance": {
+            const mn = (mask.min ?? 0) / 100 * 255, mx = (mask.max ?? 100) / 100 * 255;
+            const featherAmt = Math.max(1, (mask.feather ?? 20) / 100 * 76.5);
+            for (let i = 0; i < n; i++) {
+                const p = i * 4;
+                const luma = 0.299 * buf[p] + 0.587 * buf[p + 1] + 0.114 * buf[p + 2];
+                let w;
+                if (luma >= mn && luma <= mx) w = 1;
+                else if (luma < mn) w = clamp01(1 - (mn - luma) / featherAmt);
+                else w = clamp01(1 - (luma - mx) / featherAmt);
+                weight[i] = w;
+            }
+            break;
+        }
+        case "brush":
+        case "subject": {
+            if (mask._weightCache && mask._weightCache.length === n) weight.set(mask._weightCache);
+            break;
+        }
+    }
+    if (mask.invert) {
+        for (let i = 0; i < n; i++) weight[i] = 1 - weight[i];
+    }
+    return weight;
+}
+
+// Blends a single mask's adjustment into buf in place, weighted by its
+// per-pixel mask region — the one unit of work both the real compositing
+// loop (applyMasks) and the masking modal's fast interactive-preview path
+// share, so they can never compute it two different ways.
+function applyOneMask(buf, W, H, n, mask) {
+    const weight = computeMaskWeight(mask, W, H, buf);
+    let anyWeight = false;
+    for (let i = 0; i < n; i++) { if (weight[i] > 0.0001) { anyWeight = true; break; } }
+    if (!anyWeight) return;
+    const scratch = new Uint8ClampedArray(buf);
+    applyAdjustmentSet(scratch, W, H, n, mask.adjustments || {});
+    for (let i = 0; i < n; i++) {
+        const w = weight[i];
+        if (w <= 0.0001) continue;
+        const p = i * 4;
+        buf[p]     = buf[p]     + (scratch[p]     - buf[p])     * w;
+        buf[p + 1] = buf[p + 1] + (scratch[p + 1] - buf[p + 1]) * w;
+        buf[p + 2] = buf[p + 2] + (scratch[p + 2] - buf[p + 2]) * w;
+    }
+}
+
+// Applies every mask in obj.masks on top of the already-globally-adjusted
+// buffer, in order, so masks stack exactly like Lightroom's mask list.
+function applyMasks(buf, W, H, n, masks) {
+    if (!masks || !masks.length) return;
+    for (const mask of masks) applyOneMask(buf, W, H, n, mask);
+}
+
+// Vibrance — real HSL-based selective saturation: muted colours get most of
+// the boost, already-vivid colours get very little, and the typical
+// skin-tone hue band is protected so faces don't turn orange.
+function applyVibrancePixels(buf, n, vibrancePct) {
+    if (!vibrancePct) return;
+    const v = vibrancePct / 100;
+    for (let i = 0; i < n; i++) {
+        const p = i * 4;
+        const [h, s, l] = rgbToHsl(buf[p], buf[p + 1], buf[p + 2]);
+        if (s <= 0.003) continue;
+        let boost = v * (1 - s) * 0.9;
+        if (h >= 5 && h <= 45) boost *= 0.45;
+        const newS = clamp01(s + boost);
+        const [r2, g2, b2] = hslToRgb(h, newS, l);
+        buf[p] = r2; buf[p + 1] = g2; buf[p + 2] = b2;
+    }
+}
+
+// Noise reduction — real Luminance/Color separation, the same split
+// Lightroom uses: luminance noise (grayscale speckling) and colour noise
+// (random hue/saturation blotches) look and behave differently, so each
+// gets its own small-window bilateral-style filter — weighted by *luma*
+// distance for the luminance pass (preserves colour while smoothing
+// brightness speckle) and by *chroma* distance for the colour pass
+// (preserves detail/contrast while smoothing colour blotches) — instead of
+// one pass smoothing everything by raw RGB distance.
+function applyNoiseReductionPixels(buf, W, H, n, lumaAmt, chromaAmt) {
+    if (!((lumaAmt && lumaAmt > 0) || (chromaAmt && chromaAmt > 0))) return;
+    const lumaStrength = Math.min((lumaAmt || 0) / 10, 1);
+    const chromaStrength = Math.min((chromaAmt || 0) / 10, 1);
+    const radius = 2;
+    const lumaSigma = 8 + lumaStrength * 60;
+    const chromaSigma = 10 + chromaStrength * 70;
+    const lumaDenom = 2 * lumaSigma * lumaSigma;
+    const chromaDenom = 2 * chromaSigma * chromaSigma;
+    const src = new Uint8ClampedArray(buf);
+
+    const luma = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+        const p = i * 4;
+        luma[i] = 0.299 * src[p] + 0.587 * src[p + 1] + 0.114 * src[p + 2];
+    }
+
+    for (let y = 0; y < H; y++) {
+        for (let x = 0; x < W; x++) {
+            const idx = y * W + x;
+            const ci = idx * 4;
+            const cr = src[ci], cg = src[ci + 1], cb = src[ci + 2];
+            const cLuma = luma[idx];
+            const cCbR = cr - cLuma, cCbG = cg - cLuma, cCbB = cb - cLuma;
+
+            let lumaW = 0, lumaSum = 0;
+            let chromaW = 0, chSumR = 0, chSumG = 0, chSumB = 0;
+
+            for (let dy = -radius; dy <= radius; dy++) {
+                const ny = y + dy; if (ny < 0 || ny >= H) continue;
+                for (let dx = -radius; dx <= radius; dx++) {
+                    const nx = x + dx; if (nx < 0 || nx >= W) continue;
+                    const nidx = ny * W + nx;
+                    const ni = nidx * 4;
+                    const nLuma = luma[nidx];
+
+                    if (lumaStrength > 0) {
+                        const dL = nLuma - cLuma;
+                        const wl = Math.exp(-(dL * dL) / lumaDenom);
+                        lumaSum += nLuma * wl; lumaW += wl;
+                    }
+                    if (chromaStrength > 0) {
+                        const nCbR = src[ni] - nLuma, nCbG = src[ni + 1] - nLuma, nCbB = src[ni + 2] - nLuma;
+                        const dCr = nCbR - cCbR, dCg = nCbG - cCbG, dCb = nCbB - cCbB;
+                        const wc = Math.exp(-(dCr*dCr + dCg*dCg + dCb*dCb) / chromaDenom);
+                        chSumR += nCbR * wc; chSumG += nCbG * wc; chSumB += nCbB * wc; chromaW += wc;
+                    }
+                }
+            }
+
+            let newLuma = cLuma;
+            if (lumaStrength > 0 && lumaW > 0) {
+                newLuma = cLuma + (lumaSum / lumaW - cLuma) * lumaStrength;
+            }
+            let newCbR = cCbR, newCbG = cCbG, newCbB = cCbB;
+            if (chromaStrength > 0 && chromaW > 0) {
+                newCbR = cCbR + (chSumR / chromaW - cCbR) * chromaStrength;
+                newCbG = cCbG + (chSumG / chromaW - cCbG) * chromaStrength;
+                newCbB = cCbB + (chSumB / chromaW - cCbB) * chromaStrength;
+            }
+            buf[ci]   = newLuma + newCbR;
+            buf[ci+1] = newLuma + newCbG;
+            buf[ci+2] = newLuma + newCbB;
+        }
+    }
+}
+
+// Deterministic per-pixel hash -> [0,1), used for grain so the same image +
+// settings always reproduce the same grain pattern (no flicker on re-render)
+// without needing to store a noise bitmap anywhere.
+function _grainHash(x, y, seed) {
+    const v = Math.sin(x * 12.9898 + y * 78.233 + seed * 37.719) * 43758.5453;
+    return v - Math.floor(v);
+}
+
+// Grain — real per-pixel photographic grain (classic "add noise" technique,
+// not feTurbulence fractal noise, but the same 3 creative controls): Size
+// controls how big each grain "cell" is (coarser sampling grid, upscaled),
+// Roughness controls how uneven the per-cell brightness distribution is, and
+// Amount blends the grained result back with the clean original so 0 is
+// truly a no-op.
+function applyGrainPixels(buf, W, H, n, amount, size, roughness) {
+    if (!amount) return;
+    const amt = clamp01(amount / 100);
+    const cell = Math.max(1, Math.round(1 + (size ?? 50) / 100 * 3));
+    const rough = 0.4 + clamp01((roughness ?? 50) / 100) * 1.6;
+    const cw = Math.ceil(W / cell), ch = Math.ceil(H / cell);
+    const cellNoise = new Float32Array(cw * ch);
+    for (let cy = 0; cy < ch; cy++) {
+        for (let cx = 0; cx < cw; cx++) {
+            let v = (_grainHash(cx, cy, 1.7) - 0.5) * 2;
+            v = Math.sign(v) * Math.pow(Math.abs(v), 1 / rough);
+            cellNoise[cy * cw + cx] = v;
+        }
+    }
+    for (let y = 0; y < H; y++) {
+        const cy = Math.min(ch - 1, (y / cell) | 0);
+        for (let x = 0; x < W; x++) {
+            const cx = Math.min(cw - 1, (x / cell) | 0);
+            const delta = cellNoise[cy * cw + cx] * 38 * amt;
+            const p = (y * W + x) * 4;
+            buf[p] = buf[p] + delta;
+            buf[p + 1] = buf[p + 1] + delta;
+            buf[p + 2] = buf[p + 2] + delta;
+        }
+    }
+}
+
+// Runs the full shared adjustment set against a buffer using an arbitrary
+// adjustments object — the global pass and every per-mask pass both go
+// through this one function so they can never drift apart. Vignette is
+// deliberately not here: it's anchored to the whole frame rather than any
+// one region, so (matching real Lightroom) it stays a global-only effect,
+// not a per-mask one.
+function applyAdjustmentSet(buf, W, H, n, adj) {
+    applyExposureContrastPixels(buf, n, adj.brightness, adj.contrast);
+    applyWhiteBalanceAndTone(buf, n, adj.temperature, adj.tint, adj.blacks, adj.shadows, adj.highlights, adj.whites);
+    applyClarityPass(buf, W, H, n, adj.clarity);
+    applySaturationPixels(buf, n, adj.saturation);
+    applyVibrancePixels(buf, n, adj.vibrance);
+    applyNoiseReductionPixels(buf, W, H, n, adj.noise, adj.noiseColor);
+    applyGrainPixels(buf, W, H, n, adj.grain, adj.grainSize, adj.grainRoughness);
+}
+
 function processImagePixels(orig, obj) {
     const { W, H, data } = orig;
     const n = W * H;
     const out = new Uint8ClampedArray(data);
 
-    // White balance — real per-pixel channel gain (warm/cool via R/B, tint via G)
-    const t = (obj.imgTemperature || 0) / 100, tt = (obj.imgTint || 0) / 100;
-    const wbActive = !!(obj.imgTemperature || obj.imgTint);
-    const rGain = Math.max(0.5, Math.min(1.6, 1 + t * 0.30 + tt * 0.12));
-    const gGain = Math.max(0.5, Math.min(1.6, 1 - tt * 0.18));
-    const bGain = Math.max(0.5, Math.min(1.6, 1 - t * 0.30 + tt * 0.12));
+    applyWhiteBalanceAndTone(out, n, obj.imgTemperature, obj.imgTint, obj.imgBlacks, obj.imgShadows, obj.imgHighlights, obj.imgWhites);
+    applyClarityPass(out, W, H, n, obj.imgClarity);
+    applyVibrancePixels(out, n, obj.imgVibrance);
+    applyNoiseReductionPixels(out, W, H, n, obj.imgNoise, obj.imgNoiseColor);
 
-    // Tone — Blacks/Shadows/Highlights/Whites curve, applied via luminance so
-    // hue/saturation aren't dragged around the way independent per-channel
-    // curves would (the classic tell of a "fake" tone tool).
-    const toneActive = !!(obj.imgHighlights || obj.imgShadows || obj.imgWhites || obj.imgBlacks);
-    let toneLUT = null;
-    if (toneActive) {
-        const curve = buildToneTable(obj.imgBlacks, obj.imgShadows, obj.imgHighlights, obj.imgWhites);
-        toneLUT = new Float32Array(17);
-        for (let i = 0; i < 17; i++) toneLUT[i] = curve[i];
-    }
-
-    if (wbActive || toneActive) {
-        for (let i = 0; i < n; i++) {
-            const p = i * 4;
-            let r = out[p], g = out[p + 1], b = out[p + 2];
-            if (wbActive) { r *= rGain; g *= gGain; b *= bGain; }
-            if (toneActive) {
-                const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-                if (luma < 1) {
-                    const target = toneLUT[0] * 255;
-                    r = target; g = target; b = target;
-                } else {
-                    const x = Math.min(1, luma / 255) * 16;
-                    const seg = Math.min(15, Math.floor(x));
-                    const frac = x - seg;
-                    const y = toneLUT[seg] + (toneLUT[seg + 1] - toneLUT[seg]) * frac;
-                    const factor = (y * 255) / luma;
-                    r *= factor; g *= factor; b *= factor;
-                }
-            }
-            out[p] = r; out[p + 1] = g; out[p + 2] = b;
-        }
-    }
-
-    // Clarity — real local contrast: blur the LUMINANCE plane only, then push
-    // the original luminance away from that blurred version and apply the
-    // same delta to all 3 channels so colour/saturation stay untouched.
-    if (obj.imgClarity) {
-        const amt = (obj.imgClarity / 100) * 0.9;
-        const luma = new Float32Array(n);
-        for (let i = 0; i < n; i++) {
-            const p = i * 4;
-            luma[i] = 0.299 * out[p] + 0.587 * out[p + 1] + 0.114 * out[p + 2];
-        }
-        const blurred = boxBlurPlane(luma, W, H, 8);
-        for (let i = 0; i < n; i++) {
-            const p = i * 4;
-            const delta = (luma[i] - blurred[i]) * amt;
-            out[p] = out[p] + delta;
-            out[p + 1] = out[p + 1] + delta;
-            out[p + 2] = out[p + 2] + delta;
-        }
-    }
-
-    // Vibrance — real HSL-based selective saturation: muted colours get most
-    // of the boost, already-vivid colours get very little, and the typical
-    // skin-tone hue band is protected so faces don't turn orange.
-    if (obj.imgVibrance) {
-        const v = obj.imgVibrance / 100;
-        for (let i = 0; i < n; i++) {
-            const p = i * 4;
-            const [h, s, l] = rgbToHsl(out[p], out[p + 1], out[p + 2]);
-            if (s <= 0.003) continue;
-            let boost = v * (1 - s) * 0.9;
-            if (h >= 5 && h <= 45) boost *= 0.45;
-            const newS = clamp01(s + boost);
-            const [r2, g2, b2] = hslToRgb(h, newS, l);
-            out[p] = r2; out[p + 1] = g2; out[p + 2] = b2;
-        }
-    }
-
-    // Noise reduction — small-window bilateral-style filter: blends each pixel
-    // with neighbours weighted by colour similarity, so flat/noisy regions
-    // smooth out while real edges (big colour jumps) are left alone, instead
-    // of softening the whole image uniformly.
-    if (obj.imgNoise && obj.imgNoise > 0) {
-        const strength = Math.min(obj.imgNoise / 10, 1);
-        const radius = 2;
-        const colorSigma = 12 + strength * 50;
-        const denom = 2 * colorSigma * colorSigma;
-        const src = new Uint8ClampedArray(out);
-        for (let y = 0; y < H; y++) {
-            for (let x = 0; x < W; x++) {
-                const ci = (y * W + x) * 4;
-                const cr = src[ci], cg = src[ci + 1], cb = src[ci + 2];
-                let wr = 0, wg = 0, wb = 0, wsum = 0;
-                for (let dy = -radius; dy <= radius; dy++) {
-                    const ny = y + dy; if (ny < 0 || ny >= H) continue;
-                    for (let dx = -radius; dx <= radius; dx++) {
-                        const nx = x + dx; if (nx < 0 || nx >= W) continue;
-                        const ni = (ny * W + nx) * 4;
-                        const nr = src[ni], ng = src[ni + 1], nb = src[ni + 2];
-                        const dr = nr - cr, dg = ng - cg, db = nb - cb;
-                        const wgt = Math.exp(-(dr*dr + dg*dg + db*db) / denom);
-                        wr += nr * wgt; wg += ng * wgt; wb += nb * wgt; wsum += wgt;
-                    }
-                }
-                if (wsum > 0) {
-                    out[ci]   = cr + (wr / wsum - cr) * strength;
-                    out[ci+1] = cg + (wg / wsum - cg) * strength;
-                    out[ci+2] = cb + (wb / wsum - cb) * strength;
-                }
-            }
-        }
-    }
+    applyMasks(out, W, H, n, obj.masks);
 
     return out;
 }
@@ -2090,19 +2393,29 @@ function getProcessedImageSrc(obj) {
     const cached = _imgProcessedCache.get(obj.id);
     if (cached && cached.sig === sig) return cached.url;
 
-    if (_imgDebounce.has(obj.id)) clearTimeout(_imgDebounce.get(obj.id));
-    _imgDebounce.set(obj.id, setTimeout(() => {
-        _imgDebounce.delete(obj.id);
-        getOrigImagePixels(obj.src, (orig) => {
-            if (!orig || imgAdjustSignature(obj) !== sig) return; // stale or CORS-tainted
-            const processed = processImagePixels(orig, obj);
-            const c = document.createElement("canvas");
-            c.width = orig.W; c.height = orig.H;
-            c.getContext("2d").putImageData(new ImageData(processed, orig.W, orig.H), 0, 0);
-            _imgProcessedCache.set(obj.id, { sig, url: c.toDataURL("image/png") });
-            render();
+    // Throttled to once per animation frame (not a fixed debounce delay) so
+    // dragging a slider shows the effect on the image as fast as the browser
+    // can actually paint. A burst of input events within the same frame just
+    // returns the stale bitmap below and skips scheduling another frame; the
+    // callback re-reads the signature when it actually runs (not the one
+    // captured here) so it always reflects the latest value, not whichever
+    // tick happened to schedule the frame first.
+    if (!_imgDebounce.has(obj.id)) {
+        const rafId = requestAnimationFrame(() => {
+            _imgDebounce.delete(obj.id);
+            const latestSig = imgAdjustSignature(obj);
+            getOrigImagePixels(obj.src, (orig) => {
+                if (!orig || imgAdjustSignature(obj) !== latestSig) return; // stale or CORS-tainted
+                const processed = processImagePixels(orig, obj);
+                const c = document.createElement("canvas");
+                c.width = orig.W; c.height = orig.H;
+                c.getContext("2d").putImageData(new ImageData(processed, orig.W, orig.H), 0, 0);
+                _imgProcessedCache.set(obj.id, { sig: latestSig, url: c.toDataURL("image/png") });
+                render();
+            });
         });
-    }, 110));
+        _imgDebounce.set(obj.id, rafId);
+    }
 
     return (cached && cached.url) || obj.src;
 }
@@ -2120,7 +2433,7 @@ function ensureImagesProcessed() {
             const sig = imgAdjustSignature(obj);
             const cached = _imgProcessedCache.get(obj.id);
             if (cached && cached.sig === sig) continue;
-            if (_imgDebounce.has(obj.id)) { clearTimeout(_imgDebounce.get(obj.id)); _imgDebounce.delete(obj.id); }
+            if (_imgDebounce.has(obj.id)) { cancelAnimationFrame(_imgDebounce.get(obj.id)); _imgDebounce.delete(obj.id); }
             jobs.push(new Promise(resolve => {
                 getOrigImagePixels(obj.src, (orig) => {
                     if (orig && imgAdjustSignature(obj) === sig) {
@@ -2399,15 +2712,21 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             div.style.fontStyle = obj.italic ? "italic" : "normal";
             div.style.textDecoration = [obj.underline && "underline", obj.strikethrough && "line-through"].filter(Boolean).join(" ") || "none";
             div.style.textAlign = obj.align || "left";
-            // Gradients are SVG url() refs — convert to CSS for the HTML div
+            // Gradients are SVG url() refs — convert to CSS for the HTML div.
+            // The overall Transparency control multiplies on top of each
+            // stop's own opacity (same combined effect as fill-opacity over
+            // an SVG gradient fill).
+            const _fillOverallOp = (obj.fill && obj.fill.opacity !== undefined) ? obj.fill.opacity : 100;
             if (obj.fill && obj.fill.type === "gradient" && obj.fill.stops) {
                 const stops = obj.fill.stops.map(s =>
-                    `${hexToRgba(s.color, s.opacity ?? 100)} ${s.pos}%`
+                    `${hexToRgba(s.color, (s.opacity ?? 100) * _fillOverallOp / 100)} ${s.pos}%`
                 ).join(", ");
                 const cssAngle = ((obj.fill.angle || 0) + 90) % 360;
                 div.style.background = (obj.fill.gradientType === "radial")
                     ? `radial-gradient(circle at center, ${stops})`
                     : `linear-gradient(${cssAngle}deg, ${stops})`;
+            } else if (obj.fill && obj.fill.type === "solid" && fill !== "none" && _fillOverallOp !== 100) {
+                div.style.background = hexToRgba(fill, _fillOverallOp);
             } else {
                 div.style.background = fill === "none" ? "transparent" : fill;
             }
@@ -2467,43 +2786,8 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             // Remaining adjustments are genuinely correct as simple, fast CSS
             // filters and are layered on top of the (possibly already-processed)
             // bitmap above.
-            const imgFilters = [];
-
-            // Exposure
-            if (obj.imgBrightness !== undefined && obj.imgBrightness !== 100)
-                imgFilters.push(`brightness(${obj.imgBrightness / 100})`);
-            if (obj.imgContrast !== undefined && obj.imgContrast !== 100)
-                imgFilters.push(`contrast(${obj.imgContrast / 100})`);
-
-            // Colour (Saturation/Hue are already correct, linear operations)
-            if (obj.imgSaturation !== undefined && obj.imgSaturation !== 100)
-                imgFilters.push(`saturate(${obj.imgSaturation / 100})`);
-            if (obj.imgHue)
-                imgFilters.push(`hue-rotate(${obj.imgHue}deg)`);
-
-            // Soften (negative sharpen) — a plain blur is the correct tool here
-            if (obj.imgSharpen && obj.imgSharpen < 0)
-                imgFilters.push(`blur(${(Math.abs(obj.imgSharpen) * 0.35).toFixed(2)}px)`);
-
-            // Artistic presets — intentional stylised looks, not correction tools
-            const artisticFilters = {
-                grayscale:    "grayscale(1)",
-                sepia:        "sepia(0.8)",
-                invert:       "invert(1)",
-                blur:         "blur(4px)",
-                vintage:      "sepia(0.45) contrast(0.88) brightness(0.92) saturate(1.3) hue-rotate(-5deg)",
-                cool:         "hue-rotate(22deg) saturate(1.15) brightness(1.05)",
-                warm:         "sepia(0.2) hue-rotate(-18deg) saturate(1.3) brightness(1.05)",
-                highcontrast: "contrast(2.2) brightness(0.88)",
-                pencil:       "grayscale(1) contrast(1.9) brightness(1.15)",
-                matte:        "contrast(0.85) brightness(1.1) saturate(0.8)",
-                fade:         "contrast(0.8) brightness(1.15) saturate(0.7) sepia(0.1)",
-                chrome:       "grayscale(0.3) contrast(1.4) brightness(1.1) saturate(1.5)",
-            };
-            if (obj.imgArtistic && artisticFilters[obj.imgArtistic])
-                imgFilters.push(artisticFilters[obj.imgArtistic]);
-
-            if (imgFilters.length) shape.style.filter = imgFilters.join(" ");
+            const imgFilterStr = buildImgCssFilterString(obj);
+            if (imgFilterStr) shape.style.filter = imgFilterStr;
 
             // Real unsharp-mask sharpen via SVG feConvolveMatrix — stays outermost
             // (sharpening happens last in a real editing workflow, after tone/colour).
@@ -2546,45 +2830,107 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
                 shape.setAttribute("clip-path", `url(#${cropId})`);
             }
 
-            // Vignette — radial gradient rect overlaid on the image (pointer-events:none)
+            // Vignette — real 3-parameter version (Amount/Midpoint/Roundness/
+            // Feather, matching Lightroom's vignette panel) instead of a
+            // single fixed-shape darkening gradient.
             if (obj.imgVignette && obj.imgVignette > 0) {
                 const vigId = "img-vig-" + obj.id;
+                const amount = obj.imgVignette / 100 * 0.85;
+                const midpoint = obj.imgVignetteMidpoint ?? 50;   // 0-100: where the fade starts (lower = affects more)
+                const feather = obj.imgVignetteFeather ?? 50;     // 0-100: 0=hard edge, 100=very gradual
+                const roundness = obj.imgVignetteRoundness ?? 0;  // -100..100: -100=natural aspect ellipse, +100=circle
+
                 const vigGrad = document.createElementNS(svgNS, "radialGradient");
                 vigGrad.setAttribute("id", vigId);
                 vigGrad.setAttribute("cx", "50%"); vigGrad.setAttribute("cy", "50%");
                 vigGrad.setAttribute("r", "70%");
                 vigGrad.setAttribute("gradientUnits", "objectBoundingBox");
-                const vs1 = document.createElementNS(svgNS, "stop");
-                vs1.setAttribute("offset", "40%"); vs1.setAttribute("stop-color", "#000"); vs1.setAttribute("stop-opacity", "0");
-                const vs2 = document.createElementNS(svgNS, "stop");
-                vs2.setAttribute("offset", "100%"); vs2.setAttribute("stop-color", "#000"); vs2.setAttribute("stop-opacity", String((obj.imgVignette / 100 * 0.85).toFixed(3)));
-                vigGrad.appendChild(vs1); vigGrad.appendChild(vs2);
+
+                // Roundness: counteract (or exaggerate) the natural aspect-ratio
+                // ellipse that objectBoundingBox produces by default, scaling
+                // toward a true circle as roundness approaches +100.
+                const aspect = obj.w / Math.max(1, obj.h);
+                const t = (Math.max(-100, Math.min(100, roundness)) + 100) / 200;
+                let sx = 1, sy = 1;
+                if (aspect > 1) sx = 1 - t * (1 - 1 / aspect);
+                else if (aspect < 1) sy = 1 - t * (1 - aspect);
+                vigGrad.setAttribute("gradientTransform", `translate(0.5 0.5) scale(${sx.toFixed(4)} ${sy.toFixed(4)}) translate(-0.5 -0.5)`);
+
+                // Feather: sample several stops across the fade band and ease
+                // their opacity with a power curve — low feather concentrates
+                // the darkening sharply near the outer edge, high feather
+                // ramps it smoothly across the whole band.
+                const bandStart = Math.max(0, Math.min(100, midpoint));
+                const exponent = 1 + (100 - Math.max(0, Math.min(100, feather))) / 100 * 4; // 1..5
+                const N = 6;
+                for (let i = 0; i <= N; i++) {
+                    const tNorm = i / N;
+                    const pos = bandStart + tNorm * (100 - bandStart);
+                    const stopOpacity = amount * Math.pow(tNorm, exponent);
+                    const st = document.createElementNS(svgNS, "stop");
+                    st.setAttribute("offset", pos.toFixed(2) + "%");
+                    st.setAttribute("stop-color", "#000");
+                    st.setAttribute("stop-opacity", stopOpacity.toFixed(3));
+                    vigGrad.appendChild(st);
+                }
                 defs.appendChild(vigGrad);
                 shape._vigRect = document.createElementNS(svgNS, "rect");
                 applyAttrs(shape._vigRect, { x: obj.x, y: obj.y, width: obj.w, height: obj.h, fill: `url(#${vigId})`, "pointer-events": "none" });
             }
 
-            // Grain — feTurbulence noise composited over the image
+            // Grain — real 3-parameter version (Amount/Size/Roughness, matching
+            // Lightroom's grain panel): Size controls particle size (turbulence
+            // frequency), Roughness controls texture complexity/contrast
+            // (octaves + contrast boost), and Amount now genuinely controls how
+            // strongly the grain is blended in (previously it only nudged the
+            // frequency — the overlay was always applied at full strength).
             if (obj.imgGrain && obj.imgGrain > 0) {
                 const grId = "img-grain-" + obj.id;
+                const amount = Math.max(0, Math.min(1, obj.imgGrain / 100));
+                const size = (obj.imgGrainSize ?? 50) / 100;
+                const roughness = (obj.imgGrainRoughness ?? 50) / 100;
+                const baseFreq = (0.15 + (1 - size) * 0.7).toFixed(3);
+                const numOctaves = Math.max(1, Math.round(1 + roughness * 4));
+                const contrastBoost = 1 + roughness * 1.6;
+
                 const grFilt = document.createElementNS(svgNS, "filter");
                 grFilt.setAttribute("id", grId);
                 grFilt.setAttribute("x", "0%"); grFilt.setAttribute("y", "0%");
                 grFilt.setAttribute("width", "100%"); grFilt.setAttribute("height", "100%");
                 const turb = document.createElementNS(svgNS, "feTurbulence");
                 turb.setAttribute("type", "fractalNoise");
-                turb.setAttribute("baseFrequency", (0.55 + obj.imgGrain * 0.003).toFixed(3));
-                turb.setAttribute("numOctaves", "3");
+                turb.setAttribute("baseFrequency", baseFreq);
+                turb.setAttribute("numOctaves", String(numOctaves));
                 turb.setAttribute("stitchTiles", "stitch");
                 turb.setAttribute("result", "noise");
                 const cm = document.createElementNS(svgNS, "feColorMatrix");
                 cm.setAttribute("in", "noise"); cm.setAttribute("type", "saturate"); cm.setAttribute("values", "0"); cm.setAttribute("result", "grayNoise");
+                // Roughness: boost the noise's own contrast around mid-gray
+                // before blending — higher roughness reads as a harsher,
+                // more textured grain instead of just finer/coarser specks.
+                const rough = document.createElementNS(svgNS, "feComponentTransfer");
+                rough.setAttribute("in", "grayNoise"); rough.setAttribute("result", "roughNoise");
+                ["feFuncR", "feFuncG", "feFuncB"].forEach(tag => {
+                    const f = document.createElementNS(svgNS, tag);
+                    f.setAttribute("type", "linear");
+                    f.setAttribute("slope", contrastBoost.toFixed(3));
+                    f.setAttribute("intercept", (-(contrastBoost - 1) / 2).toFixed(3));
+                    rough.appendChild(f);
+                });
                 const blend = document.createElementNS(svgNS, "feBlend");
-                blend.setAttribute("in", "SourceGraphic"); blend.setAttribute("in2", "grayNoise");
+                blend.setAttribute("in", "SourceGraphic"); blend.setAttribute("in2", "roughNoise");
                 blend.setAttribute("mode", "overlay"); blend.setAttribute("result", "blended");
-                const comp = document.createElementNS(svgNS, "feComponentTransfer"); comp.setAttribute("in", "blended");
-                const fa = document.createElementNS(svgNS, "feFuncA"); fa.setAttribute("type", "linear"); fa.setAttribute("slope", "1"); comp.appendChild(fa);
-                grFilt.appendChild(turb); grFilt.appendChild(cm); grFilt.appendChild(blend); grFilt.appendChild(comp);
+                // Amount: mix the grainy result back with the clean original,
+                // so 0 truly means "no grain" and 100 means "full overlay".
+                const mix = document.createElementNS(svgNS, "feComposite");
+                mix.setAttribute("in", "SourceGraphic"); mix.setAttribute("in2", "blended");
+                mix.setAttribute("operator", "arithmetic");
+                mix.setAttribute("k1", "0");
+                mix.setAttribute("k2", (1 - amount).toFixed(3));
+                mix.setAttribute("k3", amount.toFixed(3));
+                mix.setAttribute("k4", "0");
+                grFilt.appendChild(turb); grFilt.appendChild(cm); grFilt.appendChild(rough);
+                grFilt.appendChild(blend); grFilt.appendChild(mix);
                 defs.appendChild(grFilt);
                 shape._grainRect = document.createElementNS(svgNS, "rect");
                 applyAttrs(shape._grainRect, { x: obj.x, y: obj.y, width: obj.w, height: obj.h, fill: "transparent", filter: `url(#${grId})`, "pointer-events": "none" });
@@ -3358,7 +3704,7 @@ function renderSlidesPanel() {
         const defs = document.createElementNS(svgNS, "defs");
         miniSvg.appendChild(defs);
         const bg = document.createElementNS(svgNS, "rect");
-        applyAttrs(bg, { x: 0, y: 0, width: SLIDE_W, height: SLIDE_H, fill: resolveFill(slide, defs) });
+        applyAttrs(bg, { x: 0, y: 0, width: SLIDE_W, height: SLIDE_H, fill: resolveFill(slide, defs), ...fillOpacityAttrs(slide.fill) });
         miniSvg.appendChild(bg);
         slide.objects.forEach(obj => miniSvg.appendChild(renderObject(obj, defs, true, i)));
         appendHeaderFooter(miniSvg);
@@ -6115,7 +6461,7 @@ function updateBorderPaintOverlay() {
     svg.appendChild(g);
 }
 
-svg.addEventListener("mousedown", (e) => {
+svg.addEventListener("pointerdown", (e) => {
     const pt = svgPoint(e);
     const target = e.target;
 
@@ -6574,7 +6920,7 @@ function drawAlignmentGuides(guides) {
     });
 }
 
-window.addEventListener("mousemove", (e) => {
+window.addEventListener("pointermove", (e) => {
     // Border paint hover: update highlighted border segment (even without a drag)
     if (borderPaintState.active) {
         const tableId = state.selection.length === 1 ? state.selection[0] : null;
@@ -6837,7 +7183,7 @@ window.addEventListener("mousemove", (e) => {
     }
 });
 
-window.addEventListener("mouseup", (e) => {
+window.addEventListener("pointerup", (e) => {
     // Crop mode: end drag
     if (cropState && cropState.edge) {
         cropState.edge = null;
@@ -7948,8 +8294,49 @@ function row(labelText, ...inputs) {
     return el("div", { class: "prop-row" }, [el("label", { text: labelText }), ...inputs]);
 }
 
+// Maps a properties-panel section's title to one of the existing ribbon icon
+// symbols, so every sidebar variant (shape, image, chart, table, etc.) gets a
+// small icon badge for free — same icon families already used in the ribbon,
+// just one shared lookup here instead of touching every section() call site.
+const SECTION_ICONS = {
+    "Position & Size": "icon-position-size",
+    "Text": "icon-textbox",
+    "Equation": "icon-equation",
+    "Markdown": "icon-markdown",
+    "LaTeX Block": "icon-latex-block",
+    "Star": "icon-star-shape",
+    "Shape Styles": "icon-shape-fill",
+    "Fill": "icon-shape-fill",
+    "Line / Outline": "icon-line-outline",
+    "Image": "icon-picture",
+    "Corrections": "icon-pic-corrections",
+    "Colour": "icon-pic-colour",
+    "Artistic Effects": "icon-pic-artistic",
+    "Chart": "icon-chart",
+    "Table Style": "icon-table",
+    "Cell Selection": "icon-table",
+    "Table Borders": "icon-table",
+    "Border Painter": "icon-table",
+    "Zoom": "icon-zoom",
+    "Video": "icon-video",
+    "Audio": "icon-audio",
+    "Link": "icon-link",
+    "Effects": "icon-pic-effects",
+};
+
 function section(title, ...children) {
-    return el("div", { class: "prop-section" }, [el("h3", { text: title }), ...children]);
+    const iconId = SECTION_ICONS[title] || "icon-properties";
+    const badge = document.createElement("span");
+    badge.className = "prop-section-badge";
+    const svg = document.createElementNS(svgNS, "svg");
+    svg.setAttribute("viewBox", "0 0 24 24");
+    svg.setAttribute("class", "prop-section-ico");
+    const use = document.createElementNS(svgNS, "use");
+    use.setAttribute("href", "#" + iconId);
+    svg.appendChild(use);
+    badge.appendChild(svg);
+    const h3 = el("h3", {}, [badge, el("span", { text: title })]);
+    return el("div", { class: "prop-section" }, [h3, ...children]);
 }
 
 // ============ Shape Styles preset gallery ============
@@ -8083,7 +8470,12 @@ function renderProperties() {
             panel.appendChild(buildStrokeSection(obj));
         }
         if (obj.type === "star") panel.appendChild(buildStarSection(obj));
-        if (obj.type === "image") panel.appendChild(buildImageSection(obj));
+        if (obj.type === "image") {
+            panel.appendChild(buildImageSection(obj));
+            panel.appendChild(buildPhotoCorrectionsSection(obj));
+            panel.appendChild(buildPhotoColourSection(obj));
+            panel.appendChild(buildPhotoArtisticSection(obj));
+        }
         if (obj.type === "chart") panel.appendChild(buildChartSection(obj));
         if (obj.type === "zoom") panel.appendChild(buildZoomSection(obj));
         if (obj.type === "video") panel.appendChild(buildMediaSection(obj, "video"));
@@ -8436,6 +8828,102 @@ function buildImageSection(obj) {
         input.click();
     };
     return section("Image", btn);
+}
+
+// A range slider paired with an exact-value number input, for precise photo
+// editing — drag for quick adjustment, type for an exact value, both stay in
+// sync. Mirrors the same obj.imgX properties (and reuses the same render()
+// pipeline, including its real-pixel debounce) as the Format Picture ribbon
+// controls, so editing from either place stays consistent.
+// Two-line layout (name+number on top, full-width slider underneath) so
+// every row's slider is the same uniform length regardless of label width —
+// matches the same treatment used in the Masking modal's adjustment panel.
+function preciseSliderRow(label, { min, max, step = 1, value, suffix = "", onSet }) {
+    const range = el("input", { type: "range", min, max, step, value, class: "precise-row-slider" });
+    const num = el("input", { type: "number", min, max, step, value, class: "small precise-row-num" });
+    const commitLive = (v) => { onSet(v); render(); };
+    range.oninput = () => { num.value = range.value; commitLive(parseFloat(range.value)); };
+    num.oninput = () => {
+        if (num.value === "" || isNaN(parseFloat(num.value))) return;
+        const v = Math.max(min, Math.min(max, parseFloat(num.value)));
+        range.value = v;
+        commitLive(v);
+    };
+    // Keep the Format Picture ribbon's own sliders in sync once an edit
+    // commits, since editing from the sidebar doesn't rebuild the whole
+    // properties panel (and therefore wouldn't otherwise re-run that sync)
+    // the way a ribbon-driven edit does.
+    range.onchange = num.onchange = () => { pushHistory(true); updateFormatPictureTab(); };
+    const valueGroup = suffix
+        ? el("span", { class: "precise-row-value" }, [num, el("span", { text: suffix, class: "small" })])
+        : el("span", { class: "precise-row-value" }, [num]);
+    const top = el("div", { class: "precise-row-top" }, [el("label", { text: label }), valueGroup]);
+    return el("div", { class: "precise-row" }, [top, range]);
+}
+
+function buildPhotoCorrectionsSection(obj) {
+    return section("Corrections",
+        preciseSliderRow("Sharpen/Soften", { min: -5, max: 5, step: 0.5, value: obj.imgSharpen ?? 0, onSet: v => obj.imgSharpen = v }),
+        preciseSliderRow("Exposure", { min: 0, max: 200, step: 5, value: obj.imgBrightness ?? 100, suffix: "%", onSet: v => obj.imgBrightness = v }),
+        preciseSliderRow("Contrast", { min: 0, max: 200, step: 5, value: obj.imgContrast ?? 100, suffix: "%", onSet: v => obj.imgContrast = v }),
+        preciseSliderRow("Highlights", { min: -100, max: 100, step: 5, value: obj.imgHighlights ?? 0, onSet: v => obj.imgHighlights = v }),
+        preciseSliderRow("Shadows", { min: -100, max: 100, step: 5, value: obj.imgShadows ?? 0, onSet: v => obj.imgShadows = v }),
+        preciseSliderRow("Whites", { min: -100, max: 100, step: 5, value: obj.imgWhites ?? 0, onSet: v => obj.imgWhites = v }),
+        preciseSliderRow("Blacks", { min: -100, max: 100, step: 5, value: obj.imgBlacks ?? 0, onSet: v => obj.imgBlacks = v }),
+        preciseSliderRow("Clarity", { min: -100, max: 100, step: 5, value: obj.imgClarity ?? 0, onSet: v => obj.imgClarity = v }),
+    );
+}
+
+function buildPhotoColourSection(obj) {
+    const recolorRow = el("div", { class: "pic-recolor-grid" });
+    [["none", "Original"], ["grayscale", "Grayscale"], ["sepia", "Sepia"], ["invert", "Invert"]].forEach(([val, label]) => {
+        const b = el("button", { class: "pic-recolor-opt", text: label, title: label });
+        b.onclick = () => {
+            pushHistory(true);
+            if (val === "none") { delete obj.imgArtistic; delete obj.imgHue; obj.imgSaturation = 100; }
+            else obj.imgArtistic = val;
+            render(); renderProperties();
+        };
+        recolorRow.appendChild(b);
+    });
+
+    return section("Colour",
+        preciseSliderRow("Temp", { min: -100, max: 100, step: 5, value: obj.imgTemperature ?? 0, onSet: v => obj.imgTemperature = v }),
+        preciseSliderRow("Tint", { min: -100, max: 100, step: 5, value: obj.imgTint ?? 0, onSet: v => obj.imgTint = v }),
+        preciseSliderRow("Vibrance", { min: -100, max: 100, step: 5, value: obj.imgVibrance ?? 0, onSet: v => obj.imgVibrance = v }),
+        preciseSliderRow("Saturation", { min: 0, max: 200, step: 5, value: obj.imgSaturation ?? 100, suffix: "%", onSet: v => obj.imgSaturation = v }),
+        preciseSliderRow("Hue Shift", { min: -180, max: 180, step: 10, value: obj.imgHue ?? 0, suffix: "°", onSet: v => obj.imgHue = v }),
+        row("Recolor", recolorRow),
+    );
+}
+
+function buildPhotoArtisticSection(obj) {
+    const artisticSelect = el("select");
+    [["none", "None"], ["blur", "Blur"], ["vintage", "Vintage"], ["cool", "Cool"], ["warm", "Warm"],
+     ["highcontrast", "High Contrast"], ["pencil", "Pencil Sketch"], ["matte", "Matte"],
+     ["fade", "Faded Film"], ["chrome", "Chrome"]].forEach(([val, label]) => {
+        artisticSelect.appendChild(el("option", { value: val, text: label }));
+    });
+    artisticSelect.value = obj.imgArtistic || "none";
+    artisticSelect.onchange = () => {
+        pushHistory(true);
+        if (artisticSelect.value === "none") delete obj.imgArtistic;
+        else obj.imgArtistic = artisticSelect.value;
+        render();
+    };
+
+    return section("Artistic Effects",
+        preciseSliderRow("Vignette", { min: 0, max: 100, step: 5, value: obj.imgVignette ?? 0, onSet: v => obj.imgVignette = v }),
+        preciseSliderRow("Midpoint", { min: 0, max: 100, step: 5, value: obj.imgVignetteMidpoint ?? 50, onSet: v => obj.imgVignetteMidpoint = v }),
+        preciseSliderRow("Roundness", { min: -100, max: 100, step: 5, value: obj.imgVignetteRoundness ?? 0, onSet: v => obj.imgVignetteRoundness = v }),
+        preciseSliderRow("Feather", { min: 0, max: 100, step: 5, value: obj.imgVignetteFeather ?? 50, onSet: v => obj.imgVignetteFeather = v }),
+        preciseSliderRow("Grain", { min: 0, max: 100, step: 5, value: obj.imgGrain ?? 0, onSet: v => obj.imgGrain = v }),
+        preciseSliderRow("Grain Size", { min: 0, max: 100, step: 5, value: obj.imgGrainSize ?? 50, onSet: v => obj.imgGrainSize = v }),
+        preciseSliderRow("Roughness", { min: 0, max: 100, step: 5, value: obj.imgGrainRoughness ?? 50, onSet: v => obj.imgGrainRoughness = v }),
+        preciseSliderRow("Luminance", { min: 0, max: 10, step: 0.5, value: obj.imgNoise ?? 0, onSet: v => obj.imgNoise = v }),
+        preciseSliderRow("Color", { min: 0, max: 10, step: 0.5, value: obj.imgNoiseColor ?? 0, onSet: v => obj.imgNoiseColor = v }),
+        row("Preset", artisticSelect),
+    );
 }
 
 function buildChartSection(obj) {
@@ -8904,7 +9392,7 @@ function buildFillSection(obj, multi, refresh) {
                 handle.style.left = stop.pos + "%";
                 handle.style.background = `${hexToRgba(stop.color, stop.opacity ?? 100)}, ${GRAD_CHECKER}`;
                 handle.title = `${stop.color}  pos:${stop.pos}%  opacity:${stop.opacity ?? 100}%\nRight-click to delete`;
-                handle.addEventListener("mousedown", mde => {
+                handle.addEventListener("pointerdown", mde => {
                     mde.preventDefault(); mde.stopPropagation();
                     selFillStop = i;
                     const startX = mde.clientX, origPos = stop.pos;
@@ -8916,8 +9404,8 @@ function buildFillSection(obj, multi, refresh) {
                         applyToAll(targets, o => { if (o.fill.stops[i]) o.fill.stops[i].pos = p; });
                         saveFillGrad(); buildFillBar();
                     };
-                    const onUp = () => { window.removeEventListener("mousemove", onMv); window.removeEventListener("mouseup", onUp); if (!moved) buildFillBar(); };
-                    window.addEventListener("mousemove", onMv); window.addEventListener("mouseup", onUp);
+                    const onUp = () => { window.removeEventListener("pointermove", onMv); window.removeEventListener("pointerup", onUp); if (!moved) buildFillBar(); };
+                    window.addEventListener("pointermove", onMv); window.addEventListener("pointerup", onUp);
                 });
                 handle.addEventListener("contextmenu", e => {
                     e.preventDefault();
@@ -8971,6 +9459,32 @@ function buildFillSection(obj, multi, refresh) {
         container.appendChild(row("Size", sizeInput, sizeVal));
         container.appendChild(row("Background", bgInput));
     }
+
+    // Overall fill transparency — works the same way regardless of fill type
+    // (Solid Colour, Gradient, Parchment Paper, Emoji Pattern all alike), on
+    // top of a gradient's own per-stop opacity. Dragging updates the already-
+    // rendered shapes directly via fill-opacity instead of going through the
+    // full render() (which tears down and rebuilds the whole canvas) on every
+    // tick, so it stays responsive even for fill types that are otherwise
+    // expensive to rebuild (parchment/emoji regenerate an SVG filter/pattern).
+    const fillOpVal = fill.opacity ?? 100;
+    const fillOpSlider = el("input", { type: "range", min: 0, max: 100, value: fillOpVal });
+    const fillOpLabel = el("span", { text: fillOpVal + "%", class: "small" });
+    fillOpSlider.oninput = () => {
+        const op = parseInt(fillOpSlider.value);
+        fillOpLabel.textContent = op + "%";
+        const opAttr = Math.max(0, Math.min(1, op / 100)).toFixed(3);
+        targets.forEach(o => {
+            o.fill.opacity = op;
+            const live = Array.isArray(o.objects)
+                ? document.getElementById("slideBgRect")
+                : document.querySelector(`[data-id="${o.id}"]`);
+            if (live) live.setAttribute("fill-opacity", opAttr);
+        });
+    };
+    fillOpSlider.onchange = () => { render(); pushHistory(true); };
+    container.appendChild(row("Transparency", fillOpSlider, fillOpLabel));
+
     return container;
 }
 
@@ -9033,15 +9547,15 @@ function buildStrokeSection(obj, multi, refresh) {
                 handle.style.left = stop.pos + "%";
                 handle.style.background = `${hexToRgba(stop.color, stop.opacity ?? 100)}, ${GRAD_CHECKER}`;
                 handle.title = `${stop.color}  pos:${stop.pos}%  opacity:${stop.opacity ?? 100}%\nRight-click to delete`;
-                handle.addEventListener("mousedown", mde => {
+                handle.addEventListener("pointerdown", mde => {
                     mde.preventDefault(); mde.stopPropagation();
                     selStrkStop = i;
                     const startX = mde.clientX, origPos = stop.pos;
                     const rect = track.getBoundingClientRect();
                     let moved = false;
                     const onMv = mv => { moved = true; const p = Math.max(0, Math.min(100, Math.round(origPos + (mv.clientX - startX) / rect.width * 100))); applyToAll(targets, o => { if (o.stroke.stops[i]) o.stroke.stops[i].pos = p; }); buildStrkBar(); };
-                    const onUp = () => { window.removeEventListener("mousemove", onMv); window.removeEventListener("mouseup", onUp); if (!moved) buildStrkBar(); };
-                    window.addEventListener("mousemove", onMv); window.addEventListener("mouseup", onUp);
+                    const onUp = () => { window.removeEventListener("pointermove", onMv); window.removeEventListener("pointerup", onUp); if (!moved) buildStrkBar(); };
+                    window.addEventListener("pointermove", onMv); window.addEventListener("pointerup", onUp);
                 });
                 handle.addEventListener("contextmenu", e => {
                     e.preventDefault();
@@ -9677,8 +10191,14 @@ function updateFormatPictureTab() {
     syncSlider("picTintSlider",      "picTintVal",      obj.imgTint,       signFmt);
     syncSlider("picVibranceSlider",  "picVibranceVal",  obj.imgVibrance,   signFmt);
     syncSlider("picVignetteSlider",  "picVignetteVal",  obj.imgVignette,   v => v);
+    syncSlider("picVignetteMidpointSlider",  "picVignetteMidpointVal",  obj.imgVignetteMidpoint ?? 50,  v => v);
+    syncSlider("picVignetteRoundnessSlider", "picVignetteRoundnessVal", obj.imgVignetteRoundness ?? 0,  signFmt);
+    syncSlider("picVignetteFeatherSlider",   "picVignetteFeatherVal",   obj.imgVignetteFeather ?? 50,   v => v);
     syncSlider("picGrainSlider",     "picGrainVal",     obj.imgGrain,      v => v);
+    syncSlider("picGrainSizeSlider",      "picGrainSizeVal",      obj.imgGrainSize ?? 50,      v => v);
+    syncSlider("picGrainRoughnessSlider", "picGrainRoughnessVal", obj.imgGrainRoughness ?? 50, v => v);
     syncSlider("picNoiseSlider",     "picNoiseVal",     obj.imgNoise,      v => v);
+    syncSlider("picNoiseColorSlider", "picNoiseColorVal", obj.imgNoiseColor, v => v);
     document.getElementById("picOpacitySlider").value = obj.opacity ?? 100;
     document.getElementById("picOpacityVal").textContent = (obj.opacity ?? 100) + "%";
     document.getElementById("picBorderColorInput").value = obj.picBorderColor || "#000000";
@@ -9842,8 +10362,14 @@ makeSimpleSlider("picVibranceSlider","picVibranceVal","imgVibrance",    v => (v 
 
 // ---- Artistic: Vignette / Grain / Noise ----
 makeSimpleSlider("picVignetteSlider","picVignetteVal","imgVignette",   v => v);
+makeSimpleSlider("picVignetteMidpointSlider",  "picVignetteMidpointVal",  "imgVignetteMidpoint",  v => v);
+makeSimpleSlider("picVignetteRoundnessSlider", "picVignetteRoundnessVal", "imgVignetteRoundness", v => v);
+makeSimpleSlider("picVignetteFeatherSlider",   "picVignetteFeatherVal",   "imgVignetteFeather",   v => v);
 makeSimpleSlider("picGrainSlider",   "picGrainVal",   "imgGrain",      v => v);
+makeSimpleSlider("picGrainSizeSlider",      "picGrainSizeVal",      "imgGrainSize",      v => v);
+makeSimpleSlider("picGrainRoughnessSlider", "picGrainRoughnessVal", "imgGrainRoughness", v => v);
 makeSimpleSlider("picNoiseSlider",   "picNoiseVal",   "imgNoise",      v => v);
+makeSimpleSlider("picNoiseColorSlider", "picNoiseColorVal", "imgNoiseColor", v => v);
 
 // ---- Rotate & Flip (ribbon large buttons) ----
 document.getElementById("picFlipHRibbonBtn").addEventListener("click", () => {
@@ -9954,7 +10480,9 @@ function resetImageProps(o) {
     delete o.imgHue; delete o.imgSharpen; delete o.imgArtistic;
     delete o.imgHighlights; delete o.imgShadows; delete o.imgWhites; delete o.imgBlacks;
     delete o.imgClarity; delete o.imgTemperature; delete o.imgTint; delete o.imgVibrance;
-    delete o.imgVignette; delete o.imgGrain; delete o.imgNoise;
+    delete o.imgVignette; delete o.imgVignetteMidpoint; delete o.imgVignetteRoundness; delete o.imgVignetteFeather;
+    delete o.imgGrain; delete o.imgGrainSize; delete o.imgGrainRoughness;
+    delete o.imgNoise; delete o.imgNoiseColor;
     delete o.imgCrop;
     delete o.picBorderWidth; delete o.picBorderColor; delete o.picBorderStyle;
 }
@@ -10773,7 +11301,7 @@ document.getElementById("bgrKeepBtn").addEventListener("click", bgrApplyFinal);
         ];
     }
 
-    canvas.addEventListener("mousedown", e => {
+    canvas.addEventListener("pointerdown", e => {
         if (!bgrSession) return;
         e.preventDefault();
         const [x, y] = toCanvas(e);
@@ -10786,23 +11314,903 @@ document.getElementById("bgrKeepBtn").addEventListener("click", bgrApplyFinal);
         bgrApplyStroke(x, y);
         bgrRender(x, y);
     });
-    canvas.addEventListener("mousemove", e => {
+    canvas.addEventListener("pointermove", e => {
         if (!bgrSession) return;
         const [x, y] = toCanvas(e);
         if (bgrSession.mouseDown && bgrSession.tool !== "smart") bgrApplyStroke(x, y);
         bgrRender(x, y);
     });
-    canvas.addEventListener("mouseup", () => {
+    canvas.addEventListener("pointerup", () => {
         if (!bgrSession) return;
         bgrSession.mouseDown = false;
         bgrSession.lastX = bgrSession.lastY = -1;
         bgrRender();
     });
-    canvas.addEventListener("mouseleave", () => {
+    canvas.addEventListener("pointerleave", () => {
         if (!bgrSession) return;
         bgrSession.mouseDown = false;
         bgrSession.lastX = bgrSession.lastY = -1;
         bgrRender();
+    });
+})();
+
+// ============ Masking modal (Lightroom-style local adjustments) ============
+let maskSession = null;
+
+document.getElementById("picMaskingBtn")?.addEventListener("click", () => {
+    const targets = picTargets();
+    if (!targets.length) return;
+    const obj = targets[0];
+    if (!obj.src) return;
+    maskingOpen(obj);
+});
+
+// Deep-clones obj.masks into a working copy Cancel can discard. Each mask's
+// _weightCache (a Float32Array, not meaningfully JSON-cloneable) is carried
+// over by reference instead — it's a derived cache of the mask's own
+// brush/subject data, not something editing the *other* fields should drop.
+function cloneMasksForEditing(masks) {
+    return (masks || []).map(m => {
+        const clone = JSON.parse(JSON.stringify(m, (k, v) => k === "_weightCache" ? undefined : v));
+        if (m._weightCache) clone._weightCache = m._weightCache;
+        return clone;
+    });
+}
+
+function maskingOpen(obj) {
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+        const W = img.naturalWidth || img.width;
+        const H = img.naturalHeight || img.height;
+        const offscreen = document.createElement("canvas");
+        offscreen.width = W; offscreen.height = H;
+        const octx = offscreen.getContext("2d");
+        octx.drawImage(img, 0, 0);
+        const srcData = octx.getImageData(0, 0, W, H).data;
+
+        const canvas = document.getElementById("maskingCanvas");
+        canvas.width = W; canvas.height = H;
+        // Exposure/Contrast/Saturation/Hue/Soften/Artistic-preset are global
+        // CSS filters layered on top of the processed bitmap in the real
+        // render path (see buildImgCssFilterString) — applying the exact
+        // same filter to this preview canvas makes it visually stack
+        // correctly with everything else instead of silently omitting them.
+        canvas.style.filter = buildImgCssFilterString(obj);
+
+        maskSession = {
+            obj, srcData, W, H,
+            offscreenCanvas: offscreen,
+            masks: cloneMasksForEditing(obj.masks),
+            selectedMaskId: null,
+            tool: "brush",
+            brushSize: 30,
+            feather: 30,
+            colorRange: 30,
+            lumRange: 25,
+            showOverlay: true,
+            mouseDown: false,
+            dragStart: null,
+        };
+
+        document.getElementById("maskingModal").classList.add("active");
+        document.getElementById("maskToolStatus").textContent = "";
+        maskSetTool("brush");
+        maskRefreshDragBase();
+        maskRenderList();
+        maskRenderAdjustPanel();
+        maskRenderPreview();
+    };
+    img.onerror = () => showStatus("Cannot process this image (CORS or format issue)", false);
+    img.src = obj.src;
+}
+
+function maskingClose() {
+    document.getElementById("maskingModal").classList.remove("active");
+    maskSession = null;
+}
+
+function maskingApplyDone() {
+    if (!maskSession) return;
+    pushHistory();
+    maskSession.obj.masks = maskSession.masks;
+    render();
+    updateFormatPictureTab();
+    maskingClose();
+}
+
+function maskSetTool(tool) {
+    if (!maskSession) return;
+    maskSession.tool = tool;
+    document.querySelectorAll("#maskingToolbar [data-mask-tool]").forEach(b => {
+        b.classList.toggle("active", b.dataset.maskTool === tool);
+    });
+    maskRenderToolOptions();
+    if (tool === "subject" && !_interactiveSegmenterPromise) {
+        document.getElementById("maskToolStatus").textContent = "Loading AI model…";
+        loadInteractiveSegmenter()
+            .then(() => { if (maskSession && maskSession.tool === "subject") document.getElementById("maskToolStatus").textContent = "Ready — click the subject"; })
+            .catch(() => { document.getElementById("maskToolStatus").textContent = "AI selection unavailable."; });
+    }
+}
+
+document.querySelectorAll("#maskingToolbar [data-mask-tool]").forEach(btn => {
+    btn.addEventListener("click", () => {
+        maskSetTool(btn.dataset.maskTool);
+        const sel = maskSession.masks.find(m => m.id === maskSession.selectedMaskId);
+        if (sel && sel.type !== btn.dataset.maskTool) {
+            maskSession.selectedMaskId = null;
+            maskRenderList();
+            maskRenderAdjustPanel();
+            maskRenderPreview();
+        }
+    });
+});
+
+function maskRenderToolOptions() {
+    const wrap = document.getElementById("maskToolOptions");
+    wrap.innerHTML = "";
+    const mk = (label, min, max, value, onChange) => {
+        const lbl = document.createElement("label");
+        lbl.className = "bgr-brush-ctrl";
+        const span = document.createElement("span");
+        span.textContent = label;
+        span.style.marginRight = "3px";
+        const input = document.createElement("input");
+        input.type = "range"; input.min = min; input.max = max; input.value = value;
+        const val = document.createElement("span");
+        val.textContent = value;
+        input.addEventListener("input", () => { val.textContent = input.value; onChange(parseFloat(input.value)); });
+        lbl.append(span, input, val);
+        wrap.appendChild(lbl);
+    };
+    const tool = maskSession.tool;
+    if (tool === "brush") {
+        mk("Size", 5, 150, maskSession.brushSize, v => maskSession.brushSize = v);
+        mk("Feather", 0, 100, maskSession.feather, v => maskSession.feather = v);
+    } else if (tool === "linear" || tool === "radial") {
+        mk("Feather", 0, 100, maskSession.feather, v => maskSession.feather = v);
+    } else if (tool === "color") {
+        mk("Range", 0, 100, maskSession.colorRange, v => maskSession.colorRange = v);
+        mk("Feather", 0, 100, maskSession.feather, v => maskSession.feather = v);
+    } else if (tool === "luminance") {
+        mk("Range", 0, 100, maskSession.lumRange, v => maskSession.lumRange = v);
+        mk("Feather", 0, 100, maskSession.feather, v => maskSession.feather = v);
+    }
+}
+
+function maskGetOrCreateSelected(type) {
+    let m = maskSession.masks.find(mm => mm.id === maskSession.selectedMaskId);
+    if (!m || m.type !== type) {
+        m = { id: "mask_" + Date.now() + "_" + Math.floor(Math.random() * 1000), type, invert: false, visible: true, adjustments: {} };
+        maskSession.masks.push(m);
+        maskSession.selectedMaskId = m.id;
+        maskRefreshDragBase();
+    }
+    return m;
+}
+
+function maskCreateOrUpdateColorMask(x, y) {
+    const { srcData, W } = maskSession;
+    const idx = (Math.floor(y) * W + Math.floor(x)) * 4;
+    const color = "#" + [srcData[idx], srcData[idx + 1], srcData[idx + 2]].map(v => v.toString(16).padStart(2, "0")).join("");
+    const m = maskGetOrCreateSelected("color");
+    m.color = color; m.range = maskSession.colorRange; m.feather = maskSession.feather;
+    maskRenderList(); maskRenderAdjustPanel(); maskRenderPreview();
+}
+
+function maskCreateOrUpdateLuminanceMask(x, y) {
+    const { srcData, W } = maskSession;
+    const idx = (Math.floor(y) * W + Math.floor(x)) * 4;
+    const luma = 0.299 * srcData[idx] + 0.587 * srcData[idx + 1] + 0.114 * srcData[idx + 2];
+    const spread = (maskSession.lumRange / 100) * 127.5;
+    const m = maskGetOrCreateSelected("luminance");
+    m.min = clamp01((luma - spread) / 255) * 100;
+    m.max = clamp01((luma + spread) / 255) * 100;
+    m.feather = maskSession.feather;
+    maskRenderList(); maskRenderAdjustPanel(); maskRenderPreview();
+}
+
+// ---- Linear gradient — Lightroom-style: editable after creation via two
+// draggable endpoint handles, plus a draggable body to move the whole
+// gradient, with both boundary lines (0% / 100% of the feather band) drawn
+// as guides so the transition zone is visible, not just a single line.
+function maskCreateOrUpdateLinearMask(x1, y1, x2, y2) {
+    const { W, H } = maskSession;
+    const m = maskGetOrCreateSelected("linear");
+    m.x1 = x1 / W; m.y1 = y1 / H; m.x2 = x2 / W; m.y2 = y2 / H; m.feather = maskSession.feather;
+    maskRenderList(); maskRenderAdjustPanel(); maskRenderPreview();
+}
+
+function maskLinearHandlePositions(m) {
+    const { W, H } = maskSession;
+    const x1 = m.x1 * W, y1 = m.y1 * H, x2 = m.x2 * W, y2 = m.y2 * H;
+    const dx = x2 - x1, dy = y2 - y1;
+    const len = Math.hypot(dx, dy) || 1;
+    const ux = dx / len, uy = dy / len;
+    const featherPx = Math.max(1, (m.feather ?? 50) / 100 * len);
+    return { x1, y1, x2, y2, fx: x1 + ux * featherPx, fy: y1 + uy * featherPx };
+}
+
+function maskPixelScale() {
+    const canvas = document.getElementById("maskingCanvas");
+    const rect = canvas.getBoundingClientRect();
+    return rect.width > 0 ? maskSession.W / rect.width : 1;
+}
+
+// Hit-tests canvas-pixel point (x,y) against mask m's endpoint/feather
+// handles and body line; returns "start" | "end" | "feather" | "move" | null.
+function maskLinearHitTest(m, x, y) {
+    const { x1, y1, x2, y2, fx, fy } = maskLinearHandlePositions(m);
+    const HANDLE_R = 11 * maskPixelScale();
+    if (Math.hypot(x - x1, y - y1) <= HANDLE_R) return "start";
+    if (Math.hypot(x - x2, y - y2) <= HANDLE_R) return "end";
+    if (Math.hypot(x - fx, y - fy) <= HANDLE_R) return "feather";
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1) return null;
+    let t = ((x - x1) * dx + (y - y1) * dy) / len2;
+    t = Math.max(0, Math.min(1, t));
+    const px = x1 + t * dx, py = y1 + t * dy;
+    return Math.hypot(x - px, y - py) <= 10 * maskPixelScale() ? "move" : null;
+}
+
+function maskCreateOrUpdateRadialMask(cx, cy, rx, ry) {
+    const { W, H } = maskSession;
+    const m = maskGetOrCreateSelected("radial");
+    m.cx = cx / W; m.cy = cy / H; m.rx = Math.max(0.02, rx / W); m.ry = Math.max(0.02, ry / H);
+    m.feather = maskSession.feather;
+    if (m.roundness === undefined) m.roundness = 0;
+    maskRenderList(); maskRenderAdjustPanel(); maskRenderPreview();
+}
+
+// Radial gradient — Lightroom-style editable handles: drag the center to
+// move, the right/bottom edge handles to resize independently per axis, and
+// the inner dashed ring's handle to adjust feather, all directly on canvas.
+function maskRadialHandlePositions(m) {
+    const { W, H } = maskSession;
+    const cx = m.cx * W, cy = m.cy * H, rx = m.rx * W, ry = m.ry * H;
+    const featherAmt = Math.max(0.001, Math.min(1, (m.feather ?? 50) / 100));
+    const innerR = 1 - featherAmt;
+    return {
+        cx, cy, rx, ry, innerR,
+        right: [cx + rx, cy],
+        bottom: [cx, cy + ry],
+        feather: [cx + rx * innerR * Math.SQRT1_2, cy + ry * innerR * Math.SQRT1_2],
+    };
+}
+
+function maskRadialHitTest(m, x, y) {
+    const pos = maskRadialHandlePositions(m);
+    const HANDLE_R = 11 * maskPixelScale();
+    if (Math.hypot(x - pos.right[0], y - pos.right[1]) <= HANDLE_R) return "resize-x";
+    if (Math.hypot(x - pos.bottom[0], y - pos.bottom[1]) <= HANDLE_R) return "resize-y";
+    if (Math.hypot(x - pos.feather[0], y - pos.feather[1]) <= HANDLE_R) return "feather";
+    if (Math.hypot(x - pos.cx, y - pos.cy) <= HANDLE_R) return "move";
+    return null;
+}
+
+function maskBrushStroke(x, y, isFirstPoint) {
+    const m = maskGetOrCreateSelected("brush");
+    const { W, H } = maskSession;
+    if (!m._weightCache || m._weightCache.length !== W * H) m._weightCache = new Float32Array(W * H);
+    const r = maskSession.brushSize;
+    const featherPx = Math.max(1, (maskSession.feather / 100) * r);
+    const paint = (cx, cy) => {
+        const minY = Math.max(0, Math.floor(cy - r)), maxY = Math.min(H - 1, Math.ceil(cy + r));
+        const minX = Math.max(0, Math.floor(cx - r)), maxX = Math.min(W - 1, Math.ceil(cx + r));
+        for (let ny = minY; ny <= maxY; ny++) {
+            for (let nx = minX; nx <= maxX; nx++) {
+                const dist = Math.hypot(nx - cx, ny - cy);
+                if (dist > r) continue;
+                const a = clamp01((r - dist) / featherPx);
+                const idx = ny * W + nx;
+                if (a > m._weightCache[idx]) m._weightCache[idx] = a;
+            }
+        }
+    };
+    if (!isFirstPoint && maskSession._lastBrushPt) {
+        const [lx, ly] = maskSession._lastBrushPt;
+        const dist = Math.hypot(x - lx, y - ly);
+        const steps = Math.max(1, Math.ceil(dist / Math.max(1, r * 0.4)));
+        for (let s = 0; s <= steps; s++) {
+            const t = s / steps;
+            paint(lx + (x - lx) * t, ly + (y - ly) * t);
+        }
+    } else {
+        paint(x, y);
+    }
+    maskSession._lastBrushPt = [x, y];
+    if (isFirstPoint) { maskRenderList(); maskRenderAdjustPanel(); }
+    maskScheduleRaf(() => maskRenderFast({ type: "brush", x, y, r }));
+}
+
+async function maskCreateOrUpdateSubjectMask(x, y) {
+    const statusEl = document.getElementById("maskToolStatus");
+    const alreadyLoaded = !!_interactiveSegmenterPromise;
+    if (!alreadyLoaded) statusEl.textContent = "Loading AI model…";
+    try {
+        const segmenter = await loadInteractiveSegmenter();
+        if (!maskSession) return;
+        statusEl.textContent = "";
+        const { W, H, offscreenCanvas } = maskSession;
+        const result = segmenter.segment(offscreenCanvas, { keypoint: { x: x / W, y: y / H } });
+        const mask = result.confidenceMasks && result.confidenceMasks[0];
+        if (!mask) { statusEl.textContent = "No result — try a different point."; return; }
+        const conf = mask.getAsFloat32Array();
+        const mw = mask.width, mh = mask.height;
+        const cache = new Float32Array(W * H);
+        for (let yy = 0; yy < H; yy++) {
+            const my = Math.min(mh - 1, Math.floor(yy * mh / H));
+            for (let xx = 0; xx < W; xx++) {
+                const mx = Math.min(mw - 1, Math.floor(xx * mw / W));
+                cache[yy * W + xx] = conf[my * mw + mx] > 0.5 ? 1 : 0;
+            }
+        }
+        result.close();
+        const m = maskGetOrCreateSelected("subject");
+        m._weightCache = cache;
+        maskRenderList(); maskRenderAdjustPanel(); maskRenderPreview();
+    } catch (err) {
+        statusEl.textContent = "AI selection unavailable.";
+        console.error("Subject mask failed:", err);
+    }
+}
+
+// ---- Rendering: one fully-accurate path, one cheap interactive path ----
+//
+// maskRenderPreview() runs the SAME processImagePixels pipeline the real
+// export/render path uses, temporarily swapping in the working-copy mask
+// list — guarantees the preview can never drift from what Done commits.
+// It's the only path used for discrete actions (mask created/deleted,
+// slider released) but it reprocesses the WHOLE image including every
+// earlier mask, so calling it on every drag tick is what made dragging feel
+// laggy. maskRenderFast() is the fix: it reuses a cached "base" buffer
+// (global pass + every mask strictly before the one being edited, computed
+// once per selection change) and only re-applies the ONE mask currently
+// being dragged/scrubbed. Both funnel through maskPaintBuffer for the
+// shared tint-overlay + putImageData work, and every interactive caller
+// goes through the single rAF throttle below so a flurry of mousemove
+// events collapses to at most one render per frame.
+let _maskRafPending = false;
+let _maskRafFn = null;
+function maskScheduleRaf(fn) {
+    _maskRafFn = fn;
+    if (_maskRafPending) return;
+    _maskRafPending = true;
+    requestAnimationFrame(() => {
+        _maskRafPending = false;
+        const run = _maskRafFn;
+        _maskRafFn = null;
+        if (maskSession) run();
+    });
+}
+
+function maskComputeBaseUpTo(uptoIndex) {
+    const { obj, srcData, W, H } = maskSession;
+    const n = W * H;
+    const savedMasks = obj.masks;
+    obj.masks = [];
+    let buf;
+    try {
+        buf = processImagePixels({ W, H, data: srcData }, obj);
+    } finally {
+        obj.masks = savedMasks;
+    }
+    applyMasks(buf, W, H, n, maskSession.masks.slice(0, uptoIndex));
+    return buf;
+}
+
+// Recomputes the "drag base" for whichever mask is currently selected —
+// call this whenever the selection changes, or whenever ANY mask's data
+// changes (since that can shift what "everything before the selected one"
+// means). It's one full-image pass, but only runs on discrete state changes,
+// never on a per-frame basis.
+function maskRefreshDragBase() {
+    if (!maskSession) return;
+    const idx = maskSession.masks.findIndex(m => m.id === maskSession.selectedMaskId);
+    maskSession._dragBase = maskComputeBaseUpTo(idx < 0 ? maskSession.masks.length : idx);
+}
+
+function maskDrawOverlay(ctx, overlayGeom) {
+    if (!overlayGeom) return;
+    const scale = maskPixelScale();
+    ctx.save();
+    ctx.strokeStyle = "rgba(255,255,255,0.95)";
+    ctx.fillStyle = "rgba(255,255,255,0.95)";
+    ctx.lineWidth = 1.5 * scale;
+    if (overlayGeom.type === "brush") {
+        ctx.beginPath(); ctx.arc(overlayGeom.x, overlayGeom.y, overlayGeom.r, 0, Math.PI * 2); ctx.stroke();
+    } else if (overlayGeom.type === "linear") {
+        ctx.setLineDash([5 * scale, 4 * scale]);
+        ctx.beginPath(); ctx.moveTo(overlayGeom.x1, overlayGeom.y1); ctx.lineTo(overlayGeom.x2, overlayGeom.y2); ctx.stroke();
+        ctx.setLineDash([]);
+        const dx = overlayGeom.x2 - overlayGeom.x1, dy = overlayGeom.y2 - overlayGeom.y1;
+        const len = Math.hypot(dx, dy) || 1;
+        const ux = dx / len, uy = dy / len;
+        const px = -uy, py = ux;
+        const featherPx = Math.max(1, (overlayGeom.feather ?? 50) / 100 * len);
+        const guideLen = 36 * scale;
+        const drawGuide = (gx, gy) => {
+            ctx.beginPath();
+            ctx.moveTo(gx - px * guideLen, gy - py * guideLen);
+            ctx.lineTo(gx + px * guideLen, gy + py * guideLen);
+            ctx.stroke();
+        };
+        const fx = overlayGeom.x1 + ux * featherPx, fy = overlayGeom.y1 + uy * featherPx;
+        ctx.globalAlpha = 0.7;
+        drawGuide(overlayGeom.x1, overlayGeom.y1);
+        drawGuide(fx, fy);
+        ctx.globalAlpha = 1;
+        const handleR = 6 * scale;
+        const drawHandle = (hx, hy) => {
+            ctx.beginPath(); ctx.arc(hx, hy, handleR, 0, Math.PI * 2); ctx.fill();
+            ctx.lineWidth = 1 * scale;
+            ctx.strokeStyle = "rgba(0,0,0,0.55)";
+            ctx.beginPath(); ctx.arc(hx, hy, handleR, 0, Math.PI * 2); ctx.stroke();
+            ctx.strokeStyle = "rgba(255,255,255,0.95)";
+        };
+        [[overlayGeom.x1, overlayGeom.y1], [overlayGeom.x2, overlayGeom.y2]].forEach(([hx, hy]) => drawHandle(hx, hy));
+        if (overlayGeom.showHandles) {
+            // Feather handle — a small diamond so it reads as distinct from
+            // the round start/end handles.
+            ctx.save();
+            ctx.translate(fx, fy);
+            ctx.rotate(Math.PI / 4);
+            ctx.fillStyle = "#ffd166";
+            ctx.fillRect(-handleR * 0.8, -handleR * 0.8, handleR * 1.6, handleR * 1.6);
+            ctx.strokeStyle = "rgba(0,0,0,0.55)";
+            ctx.lineWidth = 1 * scale;
+            ctx.strokeRect(-handleR * 0.8, -handleR * 0.8, handleR * 1.6, handleR * 1.6);
+            ctx.restore();
+        }
+    } else if (overlayGeom.type === "radial") {
+        ctx.setLineDash([5 * scale, 4 * scale]);
+        ctx.beginPath(); ctx.ellipse(overlayGeom.cx, overlayGeom.cy, overlayGeom.rx, overlayGeom.ry, 0, 0, Math.PI * 2); ctx.stroke();
+        if (overlayGeom.showHandles) {
+            const featherAmt = Math.max(0.001, Math.min(1, (overlayGeom.feather ?? 50) / 100));
+            const innerR = 1 - featherAmt;
+            ctx.globalAlpha = 0.7;
+            ctx.beginPath(); ctx.ellipse(overlayGeom.cx, overlayGeom.cy, overlayGeom.rx * innerR, overlayGeom.ry * innerR, 0, 0, Math.PI * 2); ctx.stroke();
+            ctx.globalAlpha = 1;
+            ctx.setLineDash([]);
+            const handleR = 6 * scale;
+            const drawHandle = (hx, hy, fill) => {
+                ctx.fillStyle = fill;
+                ctx.beginPath(); ctx.arc(hx, hy, handleR, 0, Math.PI * 2); ctx.fill();
+                ctx.lineWidth = 1 * scale;
+                ctx.strokeStyle = "rgba(0,0,0,0.55)";
+                ctx.beginPath(); ctx.arc(hx, hy, handleR, 0, Math.PI * 2); ctx.stroke();
+            };
+            drawHandle(overlayGeom.cx, overlayGeom.cy, "rgba(255,255,255,0.95)");
+            drawHandle(overlayGeom.cx + overlayGeom.rx, overlayGeom.cy, "rgba(255,255,255,0.95)");
+            drawHandle(overlayGeom.cx, overlayGeom.cy + overlayGeom.ry, "rgba(255,255,255,0.95)");
+            drawHandle(overlayGeom.cx + overlayGeom.rx * innerR * Math.SQRT1_2, overlayGeom.cy + overlayGeom.ry * innerR * Math.SQRT1_2, "#ffd166");
+        }
+    }
+    ctx.restore();
+}
+
+// Cheapest redraw: paints an already-computed buffer + optional selected-
+// mask tint + optional vector overlay, with zero per-pixel adjustment math.
+// Shared by every render path so there's exactly one putImageData call site.
+function maskPaintBuffer(buf, overlayGeom, tintMask) {
+    if (!maskSession || !buf) return;
+    const { W, H } = maskSession;
+    const canvas = document.getElementById("maskingCanvas");
+    const ctx = canvas.getContext("2d");
+    const display = ctx.createImageData(W, H);
+    display.data.set(buf);
+    if (tintMask && maskSession.showOverlay !== false) {
+        const weight = computeMaskWeight(tintMask, W, H, buf);
+        const dp = display.data;
+        const n = W * H;
+        for (let i = 0; i < n; i++) {
+            const w = weight[i] * 0.35;
+            if (w <= 0.001) continue;
+            const s = i * 4;
+            dp[s]   = dp[s]   * (1 - w) + 255 * w;
+            dp[s+1] = dp[s+1] * (1 - w);
+            dp[s+2] = dp[s+2] * (1 - w);
+        }
+    }
+    ctx.putImageData(display, 0, 0);
+    maskDrawOverlay(ctx, overlayGeom);
+    maskSession._lastBuf = buf;
+}
+
+function maskRenderPreview(overlayGeom) {
+    if (!maskSession) return;
+    const { obj, srcData, W, H } = maskSession;
+    const savedMasks = obj.masks;
+    obj.masks = maskSession.masks;
+    let buf;
+    try {
+        buf = processImagePixels({ W, H, data: srcData }, obj);
+    } finally {
+        obj.masks = savedMasks;
+    }
+    const selected = maskSession.masks.find(m => m.id === maskSession.selectedMaskId);
+    maskPaintBuffer(buf, overlayGeom, selected || null);
+}
+
+// In-drag fast path: dragBase (everything before the selected mask) + just
+// that mask's own effect, recomputed every tick — much cheaper than the
+// full stack. Falls back to the full path if no base is cached yet.
+function maskRenderFast(overlayGeom) {
+    if (!maskSession || !maskSession._dragBase) { maskRenderPreview(overlayGeom); return; }
+    const { W, H } = maskSession;
+    const n = W * H;
+    const buf = new Uint8ClampedArray(maskSession._dragBase);
+    const m = maskSession.masks.find(mm => mm.id === maskSession.selectedMaskId);
+    if (m) applyOneMask(buf, W, H, n, m);
+    maskPaintBuffer(buf, overlayGeom, m || null);
+}
+
+const MASK_TYPE_META = {
+    brush:     { label: "Brush",     icon: "icon-mask-brush" },
+    linear:    { label: "Linear",    icon: "icon-mask-linear" },
+    radial:    { label: "Radial",    icon: "icon-mask-radial" },
+    color:     { label: "Color",     icon: "icon-mask-color" },
+    luminance: { label: "Luminance", icon: "icon-mask-luminance" },
+    subject:   { label: "Subject",   icon: "icon-mask-subject" },
+};
+
+function maskIconSvg(iconId, extraClass) {
+    return `<svg class="${extraClass || ""}" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#${iconId}"/></svg>`;
+}
+
+function maskRenderList() {
+    const list = document.getElementById("maskList");
+    list.innerHTML = "";
+    maskSession.masks.forEach((m, i) => {
+        const meta = MASK_TYPE_META[m.type] || { label: m.type, icon: "icon-mask-panel" };
+        const item = document.createElement("div");
+        item.className = "mask-list-item" + (m.id === maskSession.selectedMaskId ? " selected" : "");
+
+        const chip = document.createElement("span");
+        chip.className = "mask-type-chip";
+        chip.innerHTML = maskIconSvg(meta.icon);
+        item.appendChild(chip);
+
+        const name = document.createElement("span");
+        name.className = "mask-name";
+        name.textContent = meta.label + " " + (i + 1);
+        item.appendChild(name);
+
+        const actions = document.createElement("span");
+        actions.className = "mask-item-actions";
+
+        const visBtn = document.createElement("button");
+        visBtn.title = "Toggle visibility";
+        visBtn.innerHTML = maskIconSvg(m.visible === false ? "icon-mask-eye-off" : "icon-mask-eye");
+        if (m.visible === false) visBtn.classList.add("off");
+        visBtn.onclick = (e) => { e.stopPropagation(); m.visible = m.visible === false ? true : false; maskRefreshDragBase(); maskRenderList(); maskRenderPreview(); };
+        actions.appendChild(visBtn);
+
+        const invBtn = document.createElement("button");
+        invBtn.title = "Invert";
+        invBtn.innerHTML = maskIconSvg("icon-mask-invert");
+        if (m.invert) invBtn.classList.add("on");
+        invBtn.onclick = (e) => { e.stopPropagation(); m.invert = !m.invert; maskRefreshDragBase(); maskRenderList(); maskRenderPreview(); };
+        actions.appendChild(invBtn);
+
+        const delBtn = document.createElement("button");
+        delBtn.title = "Delete";
+        delBtn.className = "mask-item-delete";
+        delBtn.innerHTML = maskIconSvg("icon-mask-trash");
+        delBtn.onclick = (e) => {
+            e.stopPropagation();
+            maskSession.masks = maskSession.masks.filter(mm => mm.id !== m.id);
+            if (maskSession.selectedMaskId === m.id) maskSession.selectedMaskId = null;
+            maskRefreshDragBase(); maskRenderList(); maskRenderAdjustPanel(); maskRenderPreview();
+        };
+        actions.appendChild(delBtn);
+
+        item.appendChild(actions);
+
+        item.onclick = () => {
+            maskSession.selectedMaskId = m.id;
+            maskSetTool(m.type);
+            maskRefreshDragBase(); maskRenderList(); maskRenderAdjustPanel(); maskRenderPreview();
+        };
+        list.appendChild(item);
+    });
+}
+
+document.getElementById("maskAddBtn").addEventListener("click", () => {
+    if (!maskSession) return;
+    maskSession.selectedMaskId = null;
+    maskRefreshDragBase(); maskRenderList(); maskRenderAdjustPanel(); maskRenderPreview();
+});
+
+// Two-line layout (name+number on top, full-width slider underneath) so
+// every row's slider is the same uniform length regardless of label width —
+// a single-line label+slider+number+suffix row can't do that since the
+// slider's width is squeezed by however wide the label happens to be.
+function maskAdjustRow(adj, key, label, opts) {
+    const { min, max, step = 0.01, suffix = "" } = opts;
+    const value = adj[key];
+    const range = el("input", { type: "range", min, max, step, value, class: "mask-adjust-slider" });
+    const num = el("input", { type: "number", min, max, step, value, class: "small mask-adjust-num" });
+    range.addEventListener("input", () => {
+        num.value = range.value;
+        adj[key] = parseFloat(range.value);
+        maskScheduleRaf(() => maskRenderFast());
+    });
+    range.addEventListener("change", () => maskRenderPreview());
+    num.addEventListener("input", () => {
+        if (num.value === "" || isNaN(parseFloat(num.value))) return;
+        const v = Math.max(min, Math.min(max, parseFloat(num.value)));
+        range.value = v; adj[key] = v;
+        maskRenderPreview();
+    });
+    const valueGroup = suffix
+        ? el("span", { class: "mask-adjust-value" }, [num, el("span", { class: "small", text: suffix })])
+        : el("span", { class: "mask-adjust-value" }, [num]);
+    const top = el("div", { class: "mask-adjust-row-top" }, [el("label", { text: label }), valueGroup]);
+    return el("div", { class: "mask-adjust-row" }, [top, range]);
+}
+
+function maskRenderAdjustPanel() {
+    const panel = document.getElementById("maskAdjustPanel");
+    panel.innerHTML = "";
+    const m = maskSession.masks.find(mm => mm.id === maskSession.selectedMaskId);
+    if (!m) {
+        const p = document.createElement("p");
+        p.className = "empty-msg";
+        p.id = "maskAdjustEmpty";
+        p.textContent = "Create or select a mask to edit its adjustments.";
+        panel.appendChild(p);
+        return;
+    }
+    const adj = m.adjustments;
+    if (adj.brightness === undefined) adj.brightness = 100;
+    if (adj.contrast === undefined) adj.contrast = 100;
+    if (adj.saturation === undefined) adj.saturation = 100;
+    for (const k of ["highlights", "shadows", "whites", "blacks", "clarity", "temperature", "tint"]) {
+        if (adj[k] === undefined) adj[k] = 0;
+    }
+    for (const k of ["grain", "noise", "noiseColor"]) {
+        if (adj[k] === undefined) adj[k] = 0;
+    }
+    if (adj.grainSize === undefined) adj.grainSize = 50;
+    if (adj.grainRoughness === undefined) adj.grainRoughness = 50;
+    const sec = section("Adjustments",
+        maskAdjustRow(adj, "brightness", "Exposure", { min: 0, max: 200, suffix: "%" }),
+        maskAdjustRow(adj, "contrast", "Contrast", { min: 0, max: 200, suffix: "%" }),
+        maskAdjustRow(adj, "highlights", "Highlights", { min: -100, max: 100 }),
+        maskAdjustRow(adj, "shadows", "Shadows", { min: -100, max: 100 }),
+        maskAdjustRow(adj, "whites", "Whites", { min: -100, max: 100 }),
+        maskAdjustRow(adj, "blacks", "Blacks", { min: -100, max: 100 }),
+        maskAdjustRow(adj, "clarity", "Clarity", { min: -100, max: 100 }),
+        maskAdjustRow(adj, "temperature", "Temp", { min: -100, max: 100 }),
+        maskAdjustRow(adj, "tint", "Tint", { min: -100, max: 100 }),
+        maskAdjustRow(adj, "saturation", "Saturation", { min: 0, max: 200, suffix: "%" }),
+    );
+    const artSec = section("Artistic Effects",
+        maskAdjustRow(adj, "grain", "Grain", { min: 0, max: 100 }),
+        maskAdjustRow(adj, "grainSize", "Grain Size", { min: 0, max: 100 }),
+        maskAdjustRow(adj, "grainRoughness", "Roughness", { min: 0, max: 100 }),
+        maskAdjustRow(adj, "noise", "Luminance Noise", { min: 0, max: 10, step: 0.1 }),
+        maskAdjustRow(adj, "noiseColor", "Color Noise", { min: 0, max: 10, step: 0.1 }),
+    );
+    panel.appendChild(sec);
+    panel.appendChild(artSec);
+}
+
+document.getElementById("maskDoneBtn").addEventListener("click", maskingApplyDone);
+document.getElementById("maskCancelBtn").addEventListener("click", maskingClose);
+
+function maskToggleOverlay() {
+    if (!maskSession) return;
+    maskSession.showOverlay = !maskSession.showOverlay;
+    document.getElementById("maskOverlayToggleBtn").classList.toggle("active", maskSession.showOverlay);
+    maskRenderPreview();
+}
+document.getElementById("maskOverlayToggleBtn").addEventListener("click", maskToggleOverlay);
+document.addEventListener("keydown", e => {
+    if (!maskSession) return;
+    if ((e.key === "o" || e.key === "O") && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const tag = document.activeElement && document.activeElement.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA") return;
+        e.preventDefault();
+        maskToggleOverlay();
+    }
+});
+
+(function () {
+    const canvas = document.getElementById("maskingCanvas");
+    function toCanvas(e) {
+        const rect = canvas.getBoundingClientRect();
+        const s = maskSession;
+        return [(e.clientX - rect.left) * (s.W / rect.width), (e.clientY - rect.top) * (s.H / rect.height)];
+    }
+    function selectedOfType(type) {
+        const m = maskSession.masks.find(mm => mm.id === maskSession.selectedMaskId);
+        return (m && m.type === type) ? m : null;
+    }
+
+    // Hit-tests against EVERY mask of the given type, not just the currently
+    // selected one — so clicking directly on an existing (but deselected)
+    // gradient's line/ellipse or handles re-selects it, the same way
+    // Lightroom lets you click a gradient pin on canvas instead of forcing
+    // you back to the mask list every time.
+    function findMaskHit(type, hitTestFn, x, y) {
+        for (const m of maskSession.masks) {
+            if (m.type !== type) continue;
+            const hit = hitTestFn(m, x, y);
+            if (hit) return { mask: m, hit };
+        }
+        return null;
+    }
+
+    canvas.addEventListener("pointerdown", e => {
+        if (!maskSession) return;
+        e.preventDefault();
+        const [x, y] = toCanvas(e);
+        maskSession.mouseDown = true;
+        maskSession.dragStart = [x, y];
+        maskSession._lastBrushPt = null;
+        maskSession._linearDragMode = null;
+        maskSession._radialDragMode = null;
+
+        if (maskSession.tool === "color") { maskCreateOrUpdateColorMask(x, y); maskSession.mouseDown = false; return; }
+        if (maskSession.tool === "luminance") { maskCreateOrUpdateLuminanceMask(x, y); maskSession.mouseDown = false; return; }
+        if (maskSession.tool === "subject") { maskCreateOrUpdateSubjectMask(x, y); maskSession.mouseDown = false; return; }
+        if (maskSession.tool === "brush") { maskRefreshDragBase(); maskBrushStroke(x, y, true); return; }
+
+        if (maskSession.tool === "linear") {
+            const found = findMaskHit("linear", maskLinearHitTest, x, y);
+            if (found) {
+                if (maskSession.selectedMaskId !== found.mask.id) {
+                    maskSession.selectedMaskId = found.mask.id;
+                    maskRenderList(); maskRenderAdjustPanel();
+                }
+                maskSession._linearDragMode = found.hit;
+                maskSession._linearOrigGeom = maskLinearHandlePositions(found.mask);
+                maskRefreshDragBase();
+            } else {
+                // Not grabbing an existing handle/body — starting a brand
+                // new gradient, so deselect first (mouseup will create one).
+                maskSession.selectedMaskId = null;
+            }
+            return;
+        }
+        if (maskSession.tool === "radial") {
+            const found = findMaskHit("radial", maskRadialHitTest, x, y);
+            if (found) {
+                if (maskSession.selectedMaskId !== found.mask.id) {
+                    maskSession.selectedMaskId = found.mask.id;
+                    maskRenderList(); maskRenderAdjustPanel();
+                }
+                maskSession._radialDragMode = found.hit;
+                maskSession._radialOrigGeom = maskRadialHandlePositions(found.mask);
+                maskRefreshDragBase();
+            } else {
+                maskSession.selectedMaskId = null;
+            }
+            return;
+        }
+    });
+
+    canvas.addEventListener("pointermove", e => {
+        if (!maskSession) return;
+        const [x, y] = toCanvas(e);
+
+        if (!maskSession.mouseDown) {
+            // Hover feedback only — cheap redraw of the last computed
+            // buffer, no adjustment math, so this never feels laggy.
+            if (!maskSession._lastBuf) return;
+            if (maskSession.tool === "brush") {
+                const sel = maskSession.masks.find(m => m.id === maskSession.selectedMaskId);
+                maskScheduleRaf(() => maskPaintBuffer(maskSession._lastBuf, { type: "brush", x, y, r: maskSession.brushSize }, sel || null));
+            } else if (maskSession.tool === "linear") {
+                const selected = selectedOfType("linear");
+                if (selected) {
+                    const pos = maskLinearHandlePositions(selected);
+                    maskScheduleRaf(() => maskPaintBuffer(maskSession._lastBuf, { type: "linear", x1: pos.x1, y1: pos.y1, x2: pos.x2, y2: pos.y2, feather: selected.feather, showHandles: true }, selected));
+                }
+            } else if (maskSession.tool === "radial") {
+                const selected = selectedOfType("radial");
+                if (selected) {
+                    const pos = maskRadialHandlePositions(selected);
+                    maskScheduleRaf(() => maskPaintBuffer(maskSession._lastBuf, { type: "radial", cx: pos.cx, cy: pos.cy, rx: pos.rx, ry: pos.ry, feather: selected.feather, showHandles: true }, selected));
+                }
+            }
+            return;
+        }
+
+        if (maskSession.tool === "brush") {
+            maskBrushStroke(x, y, false);
+        } else if (maskSession.tool === "linear") {
+            const mode = maskSession._linearDragMode;
+            const [sx, sy] = maskSession.dragStart;
+            if (mode) {
+                const m = maskSession.masks.find(mm => mm.id === maskSession.selectedMaskId);
+                const { x1, y1, x2, y2 } = maskSession._linearOrigGeom;
+                const dx = x - sx, dy = y - sy;
+                let nx1 = x1, ny1 = y1, nx2 = x2, ny2 = y2;
+                if (mode === "start") { nx1 = x1 + dx; ny1 = y1 + dy; }
+                else if (mode === "end") { nx2 = x2 + dx; ny2 = y2 + dy; }
+                else if (mode === "move") { nx1 = x1 + dx; ny1 = y1 + dy; nx2 = x2 + dx; ny2 = y2 + dy; }
+                const { W, H } = maskSession;
+                if (mode === "feather") {
+                    // Project the cursor onto the (fixed) line direction to
+                    // get a new feather distance, expressed as % of length.
+                    const ddx = x2 - x1, ddy = y2 - y1;
+                    const len = Math.hypot(ddx, ddy) || 1;
+                    const ux = ddx / len, uy = ddy / len;
+                    const proj = (x - x1) * ux + (y - y1) * uy;
+                    m.feather = Math.max(1, Math.min(300, proj / len * 100));
+                    maskScheduleRaf(() => maskRenderFast({ type: "linear", x1, y1, x2, y2, feather: m.feather, showHandles: true }));
+                } else {
+                    m.x1 = nx1 / W; m.y1 = ny1 / H; m.x2 = nx2 / W; m.y2 = ny2 / H;
+                    maskScheduleRaf(() => maskRenderFast({ type: "linear", x1: nx1, y1: ny1, x2: nx2, y2: ny2, feather: m.feather, showHandles: true }));
+                }
+            } else {
+                maskScheduleRaf(() => maskPaintBuffer(maskSession._lastBuf, { type: "linear", x1: sx, y1: sy, x2: x, y2: y, feather: maskSession.feather }, null));
+            }
+        } else if (maskSession.tool === "radial") {
+            const mode = maskSession._radialDragMode;
+            const [sx, sy] = maskSession.dragStart;
+            if (mode) {
+                const m = maskSession.masks.find(mm => mm.id === maskSession.selectedMaskId);
+                const orig = maskSession._radialOrigGeom;
+                const { W, H } = maskSession;
+                if (mode === "move") {
+                    const dx = x - sx, dy = y - sy;
+                    m.cx = (orig.cx + dx) / W; m.cy = (orig.cy + dy) / H;
+                } else if (mode === "resize-x") {
+                    m.rx = Math.max(0.01, (x - orig.cx) / W);
+                } else if (mode === "resize-y") {
+                    m.ry = Math.max(0.01, (y - orig.cy) / H);
+                } else if (mode === "feather") {
+                    const nx = (x - orig.cx) / orig.rx, ny = (y - orig.cy) / orig.ry;
+                    const dist = Math.hypot(nx, ny);
+                    const innerR = Math.max(0, Math.min(1, dist));
+                    m.feather = Math.max(1, Math.min(100, (1 - innerR) * 100));
+                }
+                maskScheduleRaf(() => maskRenderFast({ type: "radial", cx: m.cx * W, cy: m.cy * H, rx: m.rx * W, ry: m.ry * H, feather: m.feather, showHandles: true }));
+            } else {
+                maskScheduleRaf(() => maskPaintBuffer(maskSession._lastBuf, { type: "radial", cx: sx, cy: sy, rx: Math.abs(x - sx), ry: Math.abs(y - sy) }, null));
+            }
+        }
+    });
+
+    canvas.addEventListener("pointerup", e => {
+        if (!maskSession) return;
+        const [x, y] = toCanvas(e);
+        if (maskSession.mouseDown && maskSession.tool === "linear") {
+            if (maskSession._linearDragMode) {
+                maskRenderList(); maskRenderAdjustPanel(); maskRenderPreview();
+            } else {
+                const [sx, sy] = maskSession.dragStart;
+                if (Math.hypot(x - sx, y - sy) > 2) maskCreateOrUpdateLinearMask(sx, sy, x, y);
+                else maskRenderPreview();
+            }
+        } else if (maskSession.mouseDown && maskSession.tool === "radial") {
+            if (maskSession._radialDragMode) {
+                maskRenderList(); maskRenderAdjustPanel(); maskRenderPreview();
+            } else {
+                const [sx, sy] = maskSession.dragStart;
+                if (Math.abs(x - sx) > 2 || Math.abs(y - sy) > 2) maskCreateOrUpdateRadialMask(sx, sy, Math.abs(x - sx), Math.abs(y - sy));
+                else maskRenderPreview();
+            }
+        } else if (maskSession.mouseDown && maskSession.tool === "brush") {
+            maskRenderPreview(); // settle to fully accurate compositing order
+        }
+        maskSession.mouseDown = false;
+        maskSession._lastBrushPt = null;
+        maskSession._linearDragMode = null;
+        maskSession._radialDragMode = null;
+    });
+    canvas.addEventListener("pointerleave", () => {
+        if (!maskSession) return;
+        maskSession.mouseDown = false;
+        maskSession._lastBrushPt = null;
+        maskSession._linearDragMode = null;
+        maskSession._radialDragMode = null;
     });
 })();
 
@@ -11271,7 +12679,7 @@ function renderSlidePreviewSvg(fill, objects) {
     const defs = document.createElementNS(svgNS, "defs");
     svgEl.appendChild(defs);
     const bg = document.createElementNS(svgNS, "rect");
-    applyAttrs(bg, { x: 0, y: 0, width: SLIDE_W, height: SLIDE_H, fill: resolveFill({ id: "preview", fill }, defs) });
+    applyAttrs(bg, { x: 0, y: 0, width: SLIDE_W, height: SLIDE_H, fill: resolveFill({ id: "preview", fill }, defs), ...fillOpacityAttrs(fill) });
     svgEl.appendChild(bg);
     objects.forEach(obj => svgEl.appendChild(renderObject(obj, defs, true)));
     return svgEl;
@@ -11640,7 +13048,7 @@ function buildSlideSvgString(slide, slideIndex = state.current) {
     content.setAttribute("clip-path", `url(#${clipId})`);
     wrapper.appendChild(content);
     const bg = document.createElementNS(svgNS, "rect");
-    applyAttrs(bg, { x: 0, y: 0, width: SLIDE_W, height: SLIDE_H, fill: resolveFill(slide, defs) });
+    applyAttrs(bg, { x: 0, y: 0, width: SLIDE_W, height: SLIDE_H, fill: resolveFill(slide, defs), ...fillOpacityAttrs(slide.fill) });
     content.appendChild(bg);
     slide.objects.forEach(obj => content.appendChild(renderObject(obj, defs, true, slideIndex)));
     appendHeaderFooter(content);
@@ -12487,7 +13895,7 @@ function buildIconGrid() {
 // ============ Sidebar resizing ============
 function setupSidebarResize(handle, panel, side) {
     const MIN_W = 120, MAX_W = 480;
-    handle.addEventListener("mousedown", (e) => {
+    handle.addEventListener("pointerdown", (e) => {
         e.preventDefault();
         const startX = e.clientX;
         const startW = panel.getBoundingClientRect().width;
@@ -12502,11 +13910,11 @@ function setupSidebarResize(handle, panel, side) {
         const onUp = () => {
             handle.classList.remove("resizing");
             document.body.style.cursor = "";
-            document.removeEventListener("mousemove", onMove);
-            document.removeEventListener("mouseup", onUp);
+            document.removeEventListener("pointermove", onMove);
+            document.removeEventListener("pointerup", onUp);
         };
-        document.addEventListener("mousemove", onMove);
-        document.addEventListener("mouseup", onUp);
+        document.addEventListener("pointermove", onMove);
+        document.addEventListener("pointerup", onUp);
     });
 }
 setupSidebarResize(document.getElementById("slidesResizeHandle"), document.getElementById("slidesPanel"), "left");
