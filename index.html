@@ -2772,16 +2772,14 @@
 
 <!-- Core libs needed at startup — loaded with defer so they download in parallel
      and execute in order after the DOM is ready, without blocking page paint. -->
-<script defer src="https://cdn.jsdelivr.net/npm/polybooljs@1.2.2/dist/polybool.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/mathjs/12.4.3/math.min.js"
         integrity="sha384-7hEOAEjF4ymD7TGQ0A+IUV6n9lURTQyNhdrfbjtR1ge/WDHMerUJrY75lbZUgES0"
         crossorigin="anonymous"></script>
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"
         integrity="sha384-7zkQWkzuo3B5mTepMUcHkMB5jZaolc2xDwL6VFqjFALcbeS9Ggm/Yr2r3Dy4lfFg"
         crossorigin="anonymous"></script>
-<!-- Plotly is ~3.5 MB — loaded on demand when the chart feature is first used -->
+<!-- Plotly (~3.5 MB), PolyBool, and JSZip are all loaded on demand, the first
+     time their feature (charts, merge shapes, zip export/import) is used. -->
 <script defer src="https://cdn.jsdelivr.net/npm/marked@13/marked.min.js"></script>
 <script defer src="fonts.js"></script>
 <script defer src="spellcheck.js"></script>

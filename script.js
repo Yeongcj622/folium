@@ -715,7 +715,7 @@ function render() {
         const cropObj = getObj(cropState.id);
         if (cropObj) renderCropOverlay(cropObj);
     }
-    renderSlidesPanel();
+    scheduleSlidesPanelRender();
     scheduleAutosave();
     renderAnimBadges();
     updateTransitionsRibbon();
@@ -1216,12 +1216,13 @@ function objectToPolygon(obj) {
 
 // performs a boolean operation ("union" | "combine" | "intersect" | "subtract")
 // on the currently selected shapes, replacing them with a single freeform shape
-function mergeShapes(opName) {
+async function mergeShapes(opName) {
     const objs = state.selection.map(getObj).filter(Boolean);
     if (objs.length < 2) return;
     const polys = objs.map(o => objectToPolygon(o));
     if (polys.some(p => !p)) return;
 
+    await loadPolyBool();
     pushHistory();
     let result = { regions: [polys[0]], inverted: false };
     for (let i = 1; i < polys.length; i++) {
@@ -4155,6 +4156,19 @@ const slideCtxMenu = (() => {
     return { open, close };
 })();
 
+// renderSlidesPanel() rebuilds every slide's mini-SVG thumbnail (not just the
+// current one), which is expensive for decks with many slides. render() calls
+// it on every single edit — including every tick of a slider drag — so a
+// burst of rapid edits would otherwise re-render the whole deck's thumbnails
+// dozens of times per second. Debouncing only delays when the (still fully
+// correct) rebuild happens, never skips it, so there's no staleness risk —
+// the main canvas update in render() stays synchronous/immediate either way.
+let _slidesPanelTimer = null;
+function scheduleSlidesPanelRender() {
+    if (_slidesPanelTimer) clearTimeout(_slidesPanelTimer);
+    _slidesPanelTimer = setTimeout(() => { _slidesPanelTimer = null; renderSlidesPanel(); }, 150);
+}
+
 function renderSlidesPanel() {
     const list = document.getElementById("slidesList");
     list.innerHTML = "";
@@ -5804,6 +5818,40 @@ function loadPlotly() {
         });
     }
     return _plotlyPromise;
+}
+
+// JSZip is only needed for "Export LaTeX (zip)" and "Import PPTX" — load it
+// on first use of either rather than on every page load.
+let _jsZipPromise = null;
+function loadJSZip() {
+    if (typeof window.JSZip !== "undefined") return Promise.resolve();
+    if (!_jsZipPromise) {
+        _jsZipPromise = new Promise((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = "https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js";
+            s.onload = resolve;
+            s.onerror = () => { _jsZipPromise = null; reject(new Error("Failed to load JSZip")); };
+            document.head.appendChild(s);
+        });
+    }
+    return _jsZipPromise;
+}
+
+// PolyBool is only needed for the Merge Shapes boolean operations — load it
+// on first use rather than on every page load.
+let _polyBoolPromise = null;
+function loadPolyBool() {
+    if (typeof window.PolyBool !== "undefined") return Promise.resolve();
+    if (!_polyBoolPromise) {
+        _polyBoolPromise = new Promise((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = "https://cdn.jsdelivr.net/npm/polybooljs@1.2.2/dist/polybool.min.js";
+            s.onload = resolve;
+            s.onerror = () => { _polyBoolPromise = null; reject(new Error("Failed to load PolyBool")); };
+            document.head.appendChild(s);
+        });
+    }
+    return _polyBoolPromise;
 }
 
 function showPlotModal() {
@@ -15152,8 +15200,9 @@ ${slideBlocks.join("\n\n\\newpage\n\n")}
     return { tex, imageFiles };
 }
 
-function exportTex() {
+async function exportTex() {
     const { tex, imageFiles } = generateTex();
+    await loadJSZip();
     const zip = new JSZip();
     zip.file("document.tex", tex);
     imageFiles.forEach(img => {
@@ -15864,8 +15913,9 @@ function parsePptxPicEl(picEl, scaleX, scaleY, mediaMap, grpTransform) {
 }
 
 async function importPptxFile(file) {
+    await loadJSZip();
     const JSZip = window.JSZip;
-    if (!JSZip) { alert("JSZip is not loaded — cannot import PPTX."); return null; }
+    if (!JSZip) { alert("Failed to load JSZip — check your connection and try again."); return null; }
 
     const zip = await JSZip.loadAsync(file);
 
