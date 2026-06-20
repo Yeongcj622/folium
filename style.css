@@ -319,6 +319,9 @@ body {
     align-items: center;
     justify-content: center;
 }
+.ribbon-content[data-ribbon-panel="draw"] .fxp-card + .fxp-card {
+    margin-left: 0.6rem;
+}
 .ribbon-group-label {
     font-size: 0.62rem;
     color: #8a8886;

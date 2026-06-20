@@ -256,6 +256,28 @@
       <path d="M9 2 L14.5 6 L12.5 13 L5.5 13 L3.5 6 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
       <circle cx="9" cy="9" r="2" fill="currentColor"/>
     </symbol>
+    <symbol id="fxi-stabilization" viewBox="0 0 18 18">
+      <path d="M2 13c1.5-2 2-5 2.5-7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>
+      <path d="M2 6c2 4 3.5 1 5.5 1.5S10 13 12 13s2-3 4-3" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" opacity="0.45"/>
+      <path d="M2 9c2 1.5 4 1.5 6 0s4-1.5 6 0 2.5 1.5 2.5 1.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="fxi-thickness" viewBox="0 0 18 18">
+      <path d="M2 5h14" stroke="currentColor" stroke-width="1" stroke-linecap="round"/>
+      <path d="M2 9h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/>
+      <path d="M2 13.5h14" stroke="currentColor" stroke-width="4.5" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="fxi-tip-sharpness" viewBox="0 0 18 18">
+      <path d="M9 1.5 L11 13 L9 16.5 L7 13 Z" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="fxi-tip-flatness" viewBox="0 0 18 18">
+      <path d="M5 3 L13 3 L11.5 13 L6.5 13 Z" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+      <path d="M5.6 3h6.8" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/>
+    </symbol>
+    <symbol id="fxi-pressure" viewBox="0 0 18 18">
+      <path d="M9 2v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+      <path d="M5.5 6.5 9 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M3 13.5c2-1.4 10-1.4 12 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </symbol>
 
     <!-- ---------- Header action icons ---------- -->
     <symbol id="icon-undo" viewBox="0 0 24 24">
@@ -515,6 +537,30 @@
     </symbol>
     <symbol id="icon-mask-trash" viewBox="0 0 24 24">
       <path d="M4 7h16M9 7V4.5h6V7M6 7l1 13h10l1-13"/>
+    </symbol>
+    <symbol id="icon-pen-ballpoint" viewBox="0 0 24 24">
+      <path d="M15.5 3.5 20 8 9 19l-5.5 1.5L5 15Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+      <path d="M13 6 17.5 10.5" stroke="currentColor" stroke-width="1.8"/>
+      <path d="M9 19 5 15" stroke="currentColor" stroke-width="1.8"/>
+    </symbol>
+    <symbol id="icon-pen-fountain" viewBox="0 0 24 24">
+      <path d="M12 2 18 8 13 21 11 21 6 8Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M12 9v9" stroke="currentColor" stroke-width="1.3"/>
+      <path d="M6 8h12" stroke="currentColor" stroke-width="1.3"/>
+    </symbol>
+    <symbol id="icon-pen-brush" viewBox="0 0 24 24">
+      <path d="M9 15c-2 0-4 1.5-4 4.5C5 21 6.5 22 8 21c1-3 2-4 4-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M11 16 19 4c.8-1.1 2.3.4 1.2 1.2L9 14" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="icon-pen-pencil" viewBox="0 0 24 24">
+      <path d="M14.5 3.5 20 9 9 20l-5.5 1.5L5 16Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+      <path d="M12.5 5.5 18 11" stroke="currentColor" stroke-width="1.3"/>
+      <path d="M5 16 9 20" stroke="currentColor" stroke-width="1.3"/>
+      <path d="M3.5 20.5 5 16l3 3Z" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="icon-pen-highlighter" viewBox="0 0 24 24">
+      <path d="M14 3 20 9 11 18 6 18 6 13Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+      <path d="M6 13 11 18 9 21 4 21 4 16Z" fill="currentColor" fill-opacity="0.35" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
     </symbol>
     <symbol id="icon-header-footer" viewBox="0 0 24 24">
       <rect x="3" y="3" width="18" height="18" rx="1.3"/>
@@ -842,6 +888,7 @@
         <button class="ribbon-tab" data-ribbon-tab="design">Design</button>
         <button class="ribbon-tab" data-ribbon-tab="transitions">Transitions</button>
         <button class="ribbon-tab" data-ribbon-tab="animations">Animations</button>
+        <button class="ribbon-tab" data-ribbon-tab="draw">Draw</button>
         <button class="ribbon-tab" data-ribbon-tab="textEffects" id="textEffectsTab" style="display:none;">Text Effects</button>
         <button class="ribbon-tab" data-ribbon-tab="shapeFormat" id="shapeFormatTab" style="display:none;">Edit Shape</button>
         <button class="ribbon-tab" data-ribbon-tab="formatPicture" id="formatPictureTab" style="display:none;">Format Picture</button>
@@ -2318,6 +2365,99 @@
                 </button>
             </div>
             <div class="ribbon-group-label">Animation Pane</div>
+        </div>
+    </div>
+
+    <!-- ===== Draw tab ===== -->
+    <div class="ribbon-content" data-ribbon-panel="draw">
+        <div class="ribbon-group">
+            <div class="ribbon-group-buttons">
+                <button class="tool-btn ribbon-btn-large" data-tool="select" title="Select / Move — exit drawing mode">
+                    <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-select"/></svg></span>
+                    <span class="ribbon-label">Select</span>
+                </button>
+                <button class="tool-btn ribbon-btn-large" data-tool="ink-ballpoint" title="Ballpoint Pen">
+                    <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-pen-ballpoint"/></svg></span>
+                    <span class="ribbon-label">Ballpoint<br>Pen</span>
+                </button>
+                <button class="tool-btn ribbon-btn-large" data-tool="ink-fountain" title="Fountain Pen">
+                    <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-pen-fountain"/></svg></span>
+                    <span class="ribbon-label">Fountain<br>Pen</span>
+                </button>
+                <button class="tool-btn ribbon-btn-large" data-tool="ink-brush" title="Brush">
+                    <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-pen-brush"/></svg></span>
+                    <span class="ribbon-label">Brush</span>
+                </button>
+                <button class="tool-btn ribbon-btn-large" data-tool="ink-pencil" title="Pencil">
+                    <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-pen-pencil"/></svg></span>
+                    <span class="ribbon-label">Pencil</span>
+                </button>
+                <button class="tool-btn ribbon-btn-large" data-tool="ink-highlighter" title="Highlighter">
+                    <span class="ribbon-icon"><svg class="ribbon-svg-icon"><use href="#icon-pen-highlighter"/></svg></span>
+                    <span class="ribbon-label">Highlighter</span>
+                </button>
+            </div>
+            <div class="ribbon-group-label">Tools</div>
+        </div>
+        <div class="ribbon-group">
+            <div class="ribbon-group-buttons">
+                <div class="fxp-card" id="inkStrokeCard">
+                    <div class="fxp-card-hd">
+                        <svg class="fxp-card-ico" viewBox="0 0 18 18"><use href="#fxi-thickness"/></svg>
+                        <span class="fxp-card-ttl">Stroke</span>
+                        <input type="color" id="inkColorInput" class="fxp-color-input" title="Ink color" style="margin-left:auto">
+                    </div>
+                    <div class="fxp-card-bd fxp-2col">
+                        <div class="fxp-row">
+                            <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Stroke Stabilization"><use href="#fxi-stabilization"/></svg>
+                            <input type="range" class="fxp-range fxp-range-sm" id="inkStabilizationSlider" min="0" max="100" step="1" value="20">
+                            <span class="fxp-val" id="inkStabilizationVal">20</span>
+                        </div>
+                        <div class="fxp-row">
+                            <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Pen Thickness"><use href="#fxi-thickness"/></svg>
+                            <input type="range" class="fxp-range fxp-range-sm" id="inkThicknessSlider" min="0.1" max="15" step="0.1" value="0.4">
+                            <span class="fxp-val" id="inkThicknessVal">0.4mm</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="fxp-card" id="inkFountainCard" style="display:none">
+                    <div class="fxp-card-hd">
+                        <svg class="fxp-card-ico" viewBox="0 0 18 18"><use href="#fxi-tip-flatness"/></svg>
+                        <span class="fxp-card-ttl">Fountain Pen</span>
+                    </div>
+                    <div class="fxp-card-bd fxp-2col">
+                        <div class="fxp-row">
+                            <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Tip Sharpness"><use href="#fxi-tip-sharpness"/></svg>
+                            <input type="range" class="fxp-range fxp-range-sm" id="inkTipSharpnessSlider" min="0" max="100" step="1" value="50">
+                            <span class="fxp-val" id="inkTipSharpnessVal">50</span>
+                        </div>
+                        <div class="fxp-row">
+                            <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Tip Flatness"><use href="#fxi-tip-flatness"/></svg>
+                            <input type="range" class="fxp-range fxp-range-sm" id="inkTipFlatnessSlider" min="0" max="100" step="1" value="45">
+                            <span class="fxp-val" id="inkTipFlatnessVal">45</span>
+                        </div>
+                        <div class="fxp-row">
+                            <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Pressure Sensitivity"><use href="#fxi-pressure"/></svg>
+                            <input type="range" class="fxp-range fxp-range-sm" id="inkFountainPressureSlider" min="0" max="100" step="1" value="70">
+                            <span class="fxp-val" id="inkFountainPressureVal">70</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="fxp-card" id="inkBrushCard" style="display:none">
+                    <div class="fxp-card-hd">
+                        <svg class="fxp-card-ico" viewBox="0 0 18 18"><use href="#fxi-pressure"/></svg>
+                        <span class="fxp-card-ttl">Brush</span>
+                    </div>
+                    <div class="fxp-card-bd">
+                        <div class="fxp-row">
+                            <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Pressure Sensitivity"><use href="#fxi-pressure"/></svg>
+                            <input type="range" class="fxp-range" id="inkBrushPressureSlider" min="0" max="100" step="1" value="80">
+                            <span class="fxp-val" id="inkBrushPressureVal">80</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <div class="ribbon-group-label">Settings</div>
         </div>
     </div>
 

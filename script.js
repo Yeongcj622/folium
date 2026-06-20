@@ -2,6 +2,14 @@
 // Fixed px<->cm scale (independent of slide size), based on 96px = 2.54cm (1in).
 const PX_PER_CM = 960 / 25.4;
 const PX_TO_CM = 1 / PX_PER_CM;
+const PX_PER_MM = PX_PER_CM / 10;
+
+// Draw tab — five free-hand inking tools (object type "ink", penType below)
+const INK_TOOLS = ["ink-ballpoint", "ink-fountain", "ink-brush", "ink-pencil", "ink-highlighter"];
+const INK_TOOL_TO_PEN_TYPE = {
+    "ink-ballpoint": "ballpoint", "ink-fountain": "fountain", "ink-brush": "brush",
+    "ink-pencil": "pencil", "ink-highlighter": "highlighter",
+};
 
 let SLIDE_W = 960, SLIDE_H = 540;
 // extra workspace around the slide where off-slide objects can be placed,
@@ -81,6 +89,18 @@ let state = {
     zoom: 1,
     slideW: SLIDE_W,
     slideH: SLIDE_H,
+    // Draw tab tool preferences — deliberately NOT part of the document: a
+    // tool preference, not document content, like brush presets in any real
+    // drawing app. snapshotState()/projectData() only pick specific fields
+    // (slides/current/slideW/slideH/...), so this never leaks into
+    // undo history or saved files even though it lives on `state`.
+    inkSettings: {
+        ballpoint:   { color: "#1a1a2e", thicknessMm: 0.4, stabilization: 20 },
+        fountain:    { color: "#16213e", thicknessMm: 0.6, stabilization: 30, tipSharpness: 50, pressureSensitivity: 70, tipFlatness: 45 },
+        brush:       { color: "#1a1a2e", thicknessMm: 2.5, stabilization: 35, pressureSensitivity: 80 },
+        pencil:      { color: "#3a3a3a", thicknessMm: 0.5, stabilization: 15 },
+        highlighter: { color: "#ffeb3b", thicknessMm: 6,   stabilization: 10 },
+    },
 };
 
 // ============ Slide size presets (in cm) ============
@@ -1419,6 +1439,311 @@ function finishFreeformDraw(closed) {
     render(); renderProperties(); pushHistory();
 }
 
+// ============ Draw tab: free-hand inking (ink object type) ============
+// Builds a single closed outline polygon tracing a variable-width stroke
+// centerline — SVG has no native variable-width stroke, so every pen type
+// renders as one filled path computed this way. `points` is any array of
+// {x,y} in a single coordinate space (caller's choice — render-space px for
+// final output, normalized 0..1 for the in-progress preview); `widthFn(i,
+// pt, points)` returns the full width at that sample in the SAME space.
+// `capStyle` is "round" (most pens) or "flat" (highlighter / flat
+// fountain-nib strokes, where a straight cut across reads as the right
+// shape rather than a rounded blob).
+function buildInkOutlinePath(points, widthFn, capStyle) {
+    const n = points.length;
+    if (n === 0) return "";
+    if (n === 1) {
+        const w = Math.max(0.1, widthFn(0, points[0], points));
+        const { x, y } = points[0];
+        const r = w / 2;
+        return `M ${x - r} ${y} A ${r} ${r} 0 1 0 ${x + r} ${y} A ${r} ${r} 0 1 0 ${x - r} ${y} Z`;
+    }
+
+    const tangentAt = (i) => {
+        const a = points[Math.max(0, i - 1)], b = points[Math.min(n - 1, i + 1)];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len = Math.hypot(dx, dy) || 1;
+        return Math.atan2(dy / len, dx / len);
+    };
+
+    const left = [], right = [];
+    for (let i = 0; i < n; i++) {
+        const w = Math.max(0.1, widthFn(i, points[i], points));
+        const theta = tangentAt(i);
+        const nx = -Math.sin(theta), ny = Math.cos(theta);
+        const r = w / 2;
+        left.push({ x: points[i].x + nx * r, y: points[i].y + ny * r });
+        right.push({ x: points[i].x - nx * r, y: points[i].y - ny * r });
+    }
+
+    const capArc = (center, fromAngle, toAngle, radius) => {
+        if (capStyle === "flat" || radius < 0.05) return [];
+        const segs = 8;
+        const pts = [];
+        for (let i = 1; i < segs; i++) {
+            const t = i / segs;
+            const a = fromAngle + (toAngle - fromAngle) * t;
+            pts.push({ x: center.x + Math.cos(a) * radius, y: center.y + Math.sin(a) * radius });
+        }
+        return pts;
+    };
+
+    const endTheta = tangentAt(n - 1);
+    const endR = Math.max(0.1, widthFn(n - 1, points[n - 1], points)) / 2;
+    const endCap = capArc(points[n - 1], endTheta + Math.PI / 2, endTheta - Math.PI / 2, endR);
+
+    const startTheta = tangentAt(0);
+    const startR = Math.max(0.1, widthFn(0, points[0], points)) / 2;
+    const startCap = capArc(points[0], startTheta - Math.PI / 2, startTheta - Math.PI * 1.5, startR);
+
+    const outline = [...left, ...endCap, ...right.slice().reverse(), ...startCap];
+    let d = `M ${outline[0].x} ${outline[0].y}`;
+    for (let i = 1; i < outline.length; i++) d += ` L ${outline[i].x} ${outline[i].y}`;
+    d += " Z";
+    return d;
+}
+
+// ---- Per-pen-type width models (the "accurate" part) ----
+// Every model takes (i, pt, points, base, settings) where `base` is the
+// already-mm-to-px-converted nominal thickness and `settings` is the
+// ink object's (or in-progress draw's) own snapshotted settings.
+function inkTaper(i, n, fraction) {
+    // 0..1 multiplier that tapers the first/last `fraction` of a stroke down
+    // toward a point — the lifting-the-pen-off-the-page look.
+    const taperCount = Math.max(1, Math.floor(n * fraction));
+    if (i < taperCount) return (i + 1) / (taperCount + 1);
+    if (i >= n - taperCount) return (n - i) / (taperCount + 1);
+    return 1;
+}
+
+function widthForBallpoint(i, pt, points, base) {
+    const p = pt.pressure ?? 0.5;
+    return base * (0.85 + 0.15 * p);
+}
+
+function widthForPencil(i, pt, points, base) {
+    const p = pt.pressure ?? 0.5;
+    return base * (0.7 + 0.3 * p);
+}
+
+function widthForFountain(i, pt, points, base, settings) {
+    const n = points.length;
+    const a = points[Math.max(0, i - 1)], b = points[Math.min(n - 1, i + 1)];
+    const theta = Math.atan2(b.y - a.y, b.x - a.x);
+    const nibAngle = Math.PI / 4; // fixed 45° nib, the classic calligraphy convention
+    const angleFactor = Math.abs(Math.cos(theta - nibAngle));
+    const flatness = clamp01((settings.tipFlatness ?? 45) / 100);
+    const angleWidth = base * (1 - flatness + flatness * angleFactor);
+    const sens = clamp01((settings.pressureSensitivity ?? 70) / 100);
+    const p = pt.pressure ?? 0.5;
+    const pressureWidth = angleWidth * (1 - sens + sens * p);
+    const sharpness = clamp01((settings.tipSharpness ?? 50) / 100);
+    const taperFraction = 0.02 + sharpness * 0.13; // sharper tip = longer, finer taper to a point
+    return pressureWidth * inkTaper(i, n, taperFraction);
+}
+
+function widthForBrush(i, pt, points, base, settings) {
+    const n = points.length;
+    const sens = clamp01((settings.pressureSensitivity ?? 80) / 100);
+    const p = pt.pressure ?? 0.5;
+    const pressureWidth = base * (1 - sens * 0.7 + sens * 0.7 * p);
+    return pressureWidth * inkTaper(i, n, 0.08); // bristles lifting off the page, always present
+}
+
+function widthForHighlighter(i, pt, points, base) {
+    return base; // constant — a real highlighter's chisel tip doesn't vary with hand pressure
+}
+
+const INK_WIDTH_FNS = {
+    ballpoint: widthForBallpoint,
+    pencil: widthForPencil,
+    fountain: widthForFountain,
+    brush: widthForBrush,
+    highlighter: widthForHighlighter,
+};
+const INK_CAP_STYLES = {
+    ballpoint: "round", pencil: "round", brush: "round",
+    fountain: "flat", highlighter: "flat",
+};
+
+// ---- Capture: pointerdown/pointermove/pointerup state machine ----
+// Transient draw-in-progress state, mirroring `penDraw` above — checked
+// first in the main canvas's pointer handlers, not routed through the
+// generic `drag.mode` dispatch, since continuous freehand sampling is a
+// fundamentally different interaction than discrete move/resize/rotate.
+let inkDraw = null;
+
+function inkStabilizationAlpha(stabilization) {
+    return 1 - clamp01((stabilization ?? 0) / 100) * 0.9;
+}
+
+function inkBeginStroke(tool, pt, pressure) {
+    const penType = INK_TOOL_TO_PEN_TYPE[tool];
+    const settings = { ...state.inkSettings[penType] };
+    inkDraw = {
+        penType, settings,
+        smoothed: { x: pt.x, y: pt.y },
+        points: [{ x: pt.x, y: pt.y, pressure }],
+    };
+    renderInkPreview();
+}
+
+function inkAddPoint(pt, pressure) {
+    if (!inkDraw) return;
+    const alpha = inkStabilizationAlpha(inkDraw.settings.stabilization);
+    inkDraw.smoothed = {
+        x: inkDraw.smoothed.x + (pt.x - inkDraw.smoothed.x) * alpha,
+        y: inkDraw.smoothed.y + (pt.y - inkDraw.smoothed.y) * alpha,
+    };
+    inkDraw.points.push({ x: inkDraw.smoothed.x, y: inkDraw.smoothed.y, pressure });
+    renderInkPreview();
+}
+
+// Live preview while drawing — same temp-<g>-with-pointer-events:none
+// approach as drawFreeformPreview, rebuilt on every sample.
+function renderInkPreview() {
+    let el = svg.querySelector("#ink-preview");
+    if (!el) {
+        el = document.createElementNS(svgNS, "g");
+        el.id = "ink-preview";
+        el.setAttribute("pointer-events", "none");
+        svg.appendChild(el);
+    }
+    el.innerHTML = "";
+    if (!inkDraw || inkDraw.points.length === 0) return;
+    const baseMm = inkDraw.settings.thicknessMm ?? 0.5;
+    const basePx = baseMm * PX_PER_MM;
+    const widthFn = INK_WIDTH_FNS[inkDraw.penType];
+    const d = buildInkOutlinePath(inkDraw.points, (i, pt, pts) => widthFn(i, pt, pts, basePx, inkDraw.settings), INK_CAP_STYLES[inkDraw.penType]);
+    const path = document.createElementNS(svgNS, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", inkDraw.settings.color || "#1a1a2e");
+    if (inkDraw.penType === "highlighter") {
+        path.setAttribute("fill-opacity", "0.35");
+        path.style.mixBlendMode = "multiply";
+    }
+    el.appendChild(path);
+}
+
+function finishInkStroke() {
+    if (!inkDraw) return;
+    const pts = inkDraw.points;
+    const el = svg.querySelector("#ink-preview");
+    if (el) el.remove();
+    if (pts.length < 1) { inkDraw = null; return; }
+
+    const basePx = (inkDraw.settings.thicknessMm ?? 0.5) * PX_PER_MM;
+    const pad = basePx; // enough room for the stroke's own width at the bbox edges
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of pts) {
+        minX = Math.min(minX, p.x); minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x); maxY = Math.max(maxY, p.y);
+    }
+    minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+    const w = Math.max(maxX - minX, 1), h = Math.max(maxY - minY, 1);
+    const nx = v => (v - minX) / w, ny = v => (v - minY) / h;
+
+    pushHistory();
+    const obj = makeObject("ink", minX, minY, w, h);
+    obj.fill = { type: "solid", color: inkDraw.settings.color || "#1a1a2e" };
+    obj.stroke = { color: "none", width: 0, dash: "solid" };
+    obj.penType = inkDraw.penType;
+    obj.points = pts.map(p => ({ x: nx(p.x), y: ny(p.y), pressure: p.pressure }));
+    obj.thicknessMm = inkDraw.settings.thicknessMm;
+    obj.stabilization = inkDraw.settings.stabilization;
+    if (inkDraw.penType === "fountain") {
+        obj.tipSharpness = inkDraw.settings.tipSharpness;
+        obj.pressureSensitivity = inkDraw.settings.pressureSensitivity;
+        obj.tipFlatness = inkDraw.settings.tipFlatness;
+    } else if (inkDraw.penType === "brush") {
+        obj.pressureSensitivity = inkDraw.settings.pressureSensitivity;
+    } else if (inkDraw.penType === "highlighter") {
+        obj.opacity = 35;
+    }
+
+    curSlide().objects.push(obj);
+    state.selection = [obj.id];
+    inkDraw = null;
+    // Deliberately do NOT setTool("select") — continuous multi-stroke
+    // drawing is the point of a pen tool, unlike freeform's one-shot path.
+    render(); renderProperties(); pushHistory();
+}
+
+// ---- Draw tab ribbon wiring: which settings cards show per tool, and
+// binding each slider/color input to that pen type's live defaults ----
+const INK_CARDS_FOR_PEN_TYPE = {
+    ballpoint: ["inkStrokeCard"],
+    pencil: ["inkStrokeCard"],
+    highlighter: ["inkStrokeCard"],
+    fountain: ["inkStrokeCard", "inkFountainCard"],
+    brush: ["inkStrokeCard", "inkBrushCard"],
+};
+const ALL_INK_CARD_IDS = ["inkStrokeCard", "inkFountainCard", "inkBrushCard"];
+
+function seedInkSliders(penType) {
+    const s = state.inkSettings[penType];
+    document.getElementById("inkColorInput").value = s.color;
+    document.getElementById("inkStabilizationSlider").value = s.stabilization;
+    document.getElementById("inkStabilizationVal").textContent = s.stabilization;
+    document.getElementById("inkThicknessSlider").value = s.thicknessMm;
+    document.getElementById("inkThicknessVal").textContent = s.thicknessMm + "mm";
+    if (penType === "fountain") {
+        document.getElementById("inkTipSharpnessSlider").value = s.tipSharpness;
+        document.getElementById("inkTipSharpnessVal").textContent = s.tipSharpness;
+        document.getElementById("inkFountainPressureSlider").value = s.pressureSensitivity;
+        document.getElementById("inkFountainPressureVal").textContent = s.pressureSensitivity;
+        document.getElementById("inkTipFlatnessSlider").value = s.tipFlatness;
+        document.getElementById("inkTipFlatnessVal").textContent = s.tipFlatness;
+    } else if (penType === "brush") {
+        document.getElementById("inkBrushPressureSlider").value = s.pressureSensitivity;
+        document.getElementById("inkBrushPressureVal").textContent = s.pressureSensitivity;
+    }
+}
+
+function updateInkCardsForTool(tool) {
+    const penType = INK_TOOL_TO_PEN_TYPE[tool];
+    if (!penType) return;
+    const visible = INK_CARDS_FOR_PEN_TYPE[penType] || [];
+    ALL_INK_CARD_IDS.forEach(id => {
+        document.getElementById(id).style.display = visible.includes(id) ? "" : "none";
+    });
+    seedInkSliders(penType);
+}
+
+document.querySelectorAll(".tool-btn[data-tool]").forEach(btn => {
+    if (INK_TOOL_TO_PEN_TYPE[btn.dataset.tool]) {
+        btn.addEventListener("click", () => updateInkCardsForTool(btn.dataset.tool));
+    }
+});
+
+function curInkSettings() { return state.inkSettings[INK_TOOL_TO_PEN_TYPE[state.tool] || "ballpoint"]; }
+
+document.getElementById("inkColorInput").addEventListener("input", (e) => { curInkSettings().color = e.target.value; });
+document.getElementById("inkStabilizationSlider").addEventListener("input", (e) => {
+    curInkSettings().stabilization = parseFloat(e.target.value);
+    document.getElementById("inkStabilizationVal").textContent = e.target.value;
+});
+document.getElementById("inkThicknessSlider").addEventListener("input", (e) => {
+    curInkSettings().thicknessMm = parseFloat(e.target.value);
+    document.getElementById("inkThicknessVal").textContent = e.target.value + "mm";
+});
+document.getElementById("inkTipSharpnessSlider").addEventListener("input", (e) => {
+    curInkSettings().tipSharpness = parseFloat(e.target.value);
+    document.getElementById("inkTipSharpnessVal").textContent = e.target.value;
+});
+document.getElementById("inkFountainPressureSlider").addEventListener("input", (e) => {
+    curInkSettings().pressureSensitivity = parseFloat(e.target.value);
+    document.getElementById("inkFountainPressureVal").textContent = e.target.value;
+});
+document.getElementById("inkTipFlatnessSlider").addEventListener("input", (e) => {
+    curInkSettings().tipFlatness = parseFloat(e.target.value);
+    document.getElementById("inkTipFlatnessVal").textContent = e.target.value;
+});
+document.getElementById("inkBrushPressureSlider").addEventListener("input", (e) => {
+    curInkSettings().pressureSensitivity = parseFloat(e.target.value);
+    document.getElementById("inkBrushPressureVal").textContent = e.target.value;
+});
+
 // ============ Connectors ============
 // distance (in slide units) within which a line/arrow endpoint snaps to a
 // nearby shape's connection point
@@ -2501,6 +2826,58 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
                 d: freeformPath(obj), fill, "fill-rule": "evenodd", ...sAttrs
             });
             break;
+        case "ink": {
+            shape = document.createElementNS(svgNS, "path");
+            const ax = v => obj.x + v * obj.w, ay = v => obj.y + v * obj.h;
+            const basePx = (obj.thicknessMm ?? 0.5) * PX_PER_MM;
+            const pts = (obj.points || []).map(p => ({ x: ax(p.x), y: ay(p.y), pressure: p.pressure }));
+            const widthFn = INK_WIDTH_FNS[obj.penType] || widthForBallpoint;
+            const d = buildInkOutlinePath(pts, (i, pt, ptsArr) => widthFn(i, pt, ptsArr, basePx, obj), INK_CAP_STYLES[obj.penType] || "round");
+            applyAttrs(shape, { d, fill, "fill-rule": "nonzero", ...sAttrs });
+            if (obj.penType === "highlighter") shape.style.mixBlendMode = "multiply";
+
+            // Pencil: graphite-grain texture — break the fill's edge/interior
+            // up with turbulence-derived alpha so it doesn't read as a flat
+            // vector shape.
+            if (obj.penType === "pencil") {
+                const grainId = "ink-pencil-grain-" + obj.id;
+                const grainFilt = document.createElementNS(svgNS, "filter");
+                grainFilt.setAttribute("id", grainId);
+                grainFilt.setAttribute("color-interpolation-filters", "sRGB");
+                grainFilt.setAttribute("x", "-20%"); grainFilt.setAttribute("y", "-20%");
+                grainFilt.setAttribute("width", "140%"); grainFilt.setAttribute("height", "140%");
+                const turb = document.createElementNS(svgNS, "feTurbulence");
+                applyAttrs(turb, { type: "fractalNoise", baseFrequency: "0.9", numOctaves: "2", seed: String(1 + (obj.id.length % 9)), result: "noise" });
+                const cm = document.createElementNS(svgNS, "feColorMatrix");
+                applyAttrs(cm, { in: "noise", type: "matrix", values: "0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.55 0.55 0.55 0 -0.12", result: "noiseAlpha" });
+                const comp = document.createElementNS(svgNS, "feComposite");
+                applyAttrs(comp, { in: "SourceGraphic", in2: "noiseAlpha", operator: "in" });
+                grainFilt.append(turb, cm, comp);
+                defs.appendChild(grainFilt);
+                const grainG = document.createElementNS(svgNS, "g");
+                grainG.setAttribute("filter", `url(#${grainId})`);
+                grainG.appendChild(shape);
+                shape = grainG;
+            }
+            // Brush: a light blur for soft bristle edges instead of a crisp
+            // vector outline.
+            if (obj.penType === "brush") {
+                const blurId = "ink-brush-soft-" + obj.id;
+                const blurFilt = document.createElementNS(svgNS, "filter");
+                blurFilt.setAttribute("id", blurId);
+                blurFilt.setAttribute("x", "-20%"); blurFilt.setAttribute("y", "-20%");
+                blurFilt.setAttribute("width", "140%"); blurFilt.setAttribute("height", "140%");
+                const blur = document.createElementNS(svgNS, "feGaussianBlur");
+                blur.setAttribute("stdDeviation", "0.5");
+                blurFilt.appendChild(blur);
+                defs.appendChild(blurFilt);
+                const blurG = document.createElementNS(svgNS, "g");
+                blurG.setAttribute("filter", `url(#${blurId})`);
+                blurG.appendChild(shape);
+                shape = blurG;
+            }
+            break;
+        }
         case "roundrect":
             shape = document.createElementNS(svgNS, "path");
             applyAttrs(shape, { d: roundedRectPath(obj.x, obj.y, obj.w, obj.h, obj.cornerRadius), fill, ...sAttrs });
@@ -3763,8 +4140,10 @@ document.getElementById("addSlideBtn").onclick = () => {
 // ============ Toolbar: tool selection ============
 document.querySelectorAll(".tool-btn").forEach(btn => {
     btn.onclick = () => {
-        document.querySelectorAll(".tool-btn").forEach(b => b.classList.remove("active"));
-        btn.classList.add("active");
+        // Toggle by matching data-tool, not just the clicked element — the
+        // same tool (e.g. "select") has a button in both the Home tab and
+        // the Draw tab, and they must stay in sync with each other.
+        document.querySelectorAll(".tool-btn").forEach(b => b.classList.toggle("active", b.dataset.tool === btn.dataset.tool));
         state.tool = btn.dataset.tool;
         state.selection = [];
         render(); renderProperties();
@@ -5419,8 +5798,12 @@ function setTool(tool) {
     document.querySelectorAll(".tool-btn").forEach(b => b.classList.toggle("active", b.dataset.tool === tool));
     if (tool === "freeform") {
         document.body.style.cursor = "crosshair";
+    } else if (INK_TOOLS.includes(tool)) {
+        document.body.style.cursor = "crosshair";
+        if (penDraw) { const el = svg.querySelector("#freeform-preview"); if (el) el.remove(); penDraw = null; }
     } else {
         if (penDraw) { const el = svg.querySelector("#freeform-preview"); if (el) el.remove(); penDraw = null; }
+        if (inkDraw) { const el = svg.querySelector("#ink-preview"); if (el) el.remove(); inkDraw = null; }
         document.body.style.cursor = "";
     }
 }
@@ -6491,6 +6874,17 @@ svg.addEventListener("pointerdown", (e) => {
     }
 
     if (state.tool !== "select") {
+        if (INK_TOOLS.includes(state.tool)) {
+            // Palm rejection: while a pen tool is active, only an actual
+            // stylus or mouse lays down ink — a resting palm/finger touch
+            // is silently ignored so it can't accidentally draw. Other
+            // tools (select, shapes, ...) are completely unaffected by this
+            // check and keep working via touch exactly as before.
+            if (e.pointerType === "touch") return;
+            e.preventDefault();
+            inkBeginStroke(state.tool, pt, e.pressure || 0.5);
+            return;
+        }
         if (state.tool === "freeform") {
             if (!penDraw) {
                 // Start a new freeform path
@@ -6519,6 +6913,12 @@ svg.addEventListener("pointerdown", (e) => {
 
     // check for handle interaction
     if (target.classList.contains("handle")) {
+        // A resting palm/finger landing on a small resize/rotate/vertex
+        // handle is exactly the kind of accidental fine-adjustment touch
+        // should never trigger on iPad — selecting and panning still work
+        // fine via touch (handled elsewhere, untouched), only the precise
+        // handle-drag gestures require the Apple Pencil or a mouse.
+        if (e.pointerType === "touch") return;
         const handle = target.dataset.handle;
         const obj = getObj(state.selection[0]);
         if (!obj) return;
@@ -6953,6 +7353,15 @@ window.addEventListener("pointermove", (e) => {
         return;
     }
 
+    // Draw tab inking: same palm-rejection rule as pointerdown — a stroke
+    // already in progress only continues for the pointer type that started
+    // it (touch can't ever be in this state since pointerdown rejected it).
+    if (inkDraw) {
+        if (e.pointerType === "touch") return;
+        inkAddPoint(svgPoint(e), e.pressure || 0.5);
+        return;
+    }
+
     // Crop mode drag
     if (cropState && cropState.edge) {
         const obj = getObj(cropState.id);
@@ -7205,6 +7614,12 @@ window.addEventListener("pointerup", (e) => {
         penDraw.isDragging = false;
         penDraw.curX = pu.x; penDraw.curY = pu.y;
         drawFreeformPreview();
+        return;
+    }
+
+    // Draw tab inking: finalize the stroke into an ink object
+    if (inkDraw) {
+        if (e.pointerType !== "touch") finishInkStroke();
         return;
     }
 
@@ -9653,7 +10068,10 @@ const mergeIntersectBtn = document.getElementById("mergeIntersectBtn");
 const mergeSubtractBtn = document.getElementById("mergeSubtractBtn");
 
 function shapeFormatTargets() {
-    return state.selection.map(getObj).filter(Boolean);
+    // Hand-drawn ink strokes are deliberately not "shapes" — they don't get
+    // fill/outline/effects styling, merge ops, or vertex editing, and
+    // selecting one must never steal focus away from the Draw tab.
+    return state.selection.map(getObj).filter(Boolean).filter(o => o.type !== "ink");
 }
 
 function shapeStyleTargets() {
