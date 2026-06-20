@@ -6862,6 +6862,52 @@ function triggerTouchContextMenu(clientX, clientY, target) {
     }
 }
 
+// ---- Two-finger pinch-to-zoom ----
+// #slideSvg has touch-action:none (needed so single-finger drags aren't
+// hijacked for native scroll/zoom before custom Pointer Events gestures can
+// start), which as a side effect disables the browser's own native pinch
+// gesture too — this hand-rolls it back using the exact same GPU-preview/
+// debounced-commit technique as the trackpad wheel-pinch handler further
+// down (_zoomDebounce/_zoomBaseW/_zoomBaseH/_committedZoom, shared with it).
+const activeTouches = new Map(); // pointerId -> {x, y}
+let pinchState = null; // { startDist, startZoom }
+
+function touchPinchDist() {
+    const pts = [...activeTouches.values()];
+    return Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+}
+
+function beginPinch() {
+    touchPanState = null; // a second finger landing cancels any single-finger pan
+    clearTimeout(touchLongPressTimer);
+    pinchState = { startDist: touchPinchDist(), startZoom: state.zoom };
+    _zoomBaseW = parseFloat(canvasWrap.style.width) || canvasWrap.offsetWidth;
+    _zoomBaseH = parseFloat(canvasWrap.style.height) || canvasWrap.offsetHeight;
+}
+
+function updatePinch() {
+    const dist = touchPinchDist();
+    if (!dist || !pinchState.startDist) return;
+    const factor = dist / pinchState.startDist;
+    state.zoom = Math.min(20, Math.max(0.05, pinchState.startZoom * factor));
+    const ratio = state.zoom / _committedZoom;
+    svg.style.transformOrigin = "top left";
+    svg.style.transform = `scale(${ratio})`;
+    canvasWrap.style.width = _zoomBaseW * ratio + "px";
+    canvasWrap.style.height = _zoomBaseH * ratio + "px";
+    document.getElementById("zoomLevel").textContent = Math.round(state.zoom * 100) + "%";
+    document.getElementById("zoomSlider").value = Math.round(state.zoom * 100);
+}
+
+function endPinch() {
+    pinchState = null;
+    clearTimeout(_zoomDebounce);
+    _zoomDebounce = setTimeout(() => {
+        _zoomBaseW = null; _zoomBaseH = null;
+        applyZoom();
+    }, 120);
+}
+
 // ---- Border paint tool state ----
 const borderPaintState = { active: false, color: "#000000", width: 2, dash: "solid" };
 let borderPaintHover = null; // { key, tableId } | null
@@ -6902,6 +6948,13 @@ svg.addEventListener("pointerdown", (e) => {
     // movement crosses a small threshold whether this turns into a pan or
     // stays a simple tap (tap-to-select keeps working exactly as before).
     if (e.pointerType === "touch") {
+        activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (activeTouches.size >= 2) {
+            // A second finger landing always means pinch-to-zoom, regardless
+            // of what's underneath — never selection, drawing, or panning.
+            beginPinch();
+            return;
+        }
         touchPanState = {
             startClientX: e.clientX, startClientY: e.clientY,
             scrollLeft: canvasArea.scrollLeft, scrollTop: canvasArea.scrollTop,
@@ -7395,6 +7448,17 @@ function drawAlignmentGuides(guides) {
 }
 
 window.addEventListener("pointermove", (e) => {
+    // Two-finger pinch takes priority over absolutely everything, including
+    // single-finger pan — once a second finger is down this is the only
+    // thing touch does until fingers lift.
+    if (e.pointerType === "touch" && activeTouches.has(e.pointerId)) {
+        activeTouches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (pinchState && activeTouches.size >= 2) {
+            updatePinch();
+            return;
+        }
+    }
+
     // Touch-to-pan takes priority over everything else once the finger has
     // actually moved — content (move/resize/rotate/draw/ink) never reacts
     // to a touch drag, only the canvas scroll position does. Below the
@@ -7684,6 +7748,13 @@ window.addEventListener("pointermove", (e) => {
 });
 
 window.addEventListener("pointerup", (e) => {
+    if (e.pointerType === "touch" && activeTouches.has(e.pointerId)) {
+        activeTouches.delete(e.pointerId);
+        if (pinchState && activeTouches.size < 2) {
+            endPinch();
+            return;
+        }
+    }
     if (touchPanState) {
         clearTimeout(touchLongPressTimer); // lifted before the long-press fired
         const wasPanning = touchPanState.moved;
@@ -7831,6 +7902,18 @@ window.addEventListener("pointerup", (e) => {
     }
 
     drag = null;
+});
+
+// iOS sometimes fires pointercancel instead of pointerup mid-gesture while
+// disambiguating multi-touch (e.g. a pinch settling into a system gesture) —
+// without this, a cancelled touch could leave activeTouches/pinchState/
+// touchPanState stuck, breaking the next gesture.
+window.addEventListener("pointercancel", (e) => {
+    if (e.pointerType !== "touch") return;
+    activeTouches.delete(e.pointerId);
+    clearTimeout(touchLongPressTimer);
+    if (pinchState && activeTouches.size < 2) endPinch();
+    touchPanState = null;
 });
 
 // Freeform dblclick: the second click already added an anchor via mouseup.

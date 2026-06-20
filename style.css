@@ -322,6 +322,15 @@ body {
 .ribbon-content[data-ribbon-panel="draw"] .fxp-card + .fxp-card {
     margin-left: 0.6rem;
 }
+/* The generic .fxp-val only sets min-width, so it still grows when a value
+   like "6" turns into "5.5" (or thickness's "6mm" into "5.5mm") — wide
+   enough here to fit the longest possible reading ("14.9mm") so dragging a
+   slider across a decimal boundary never reflows the card/slider width. */
+.ribbon-content[data-ribbon-panel="draw"] .fxp-val {
+    width: 2.6rem;
+    min-width: 2.6rem;
+    flex-shrink: 0;
+}
 .ribbon-group-label {
     font-size: 0.62rem;
     color: #8a8886;
@@ -1617,6 +1626,7 @@ body {
     background-color: #e4e8ec;
     overflow: auto;
     position: relative;
+    -webkit-touch-callout: none;
 }
 .canvas-pad {
     flex: 0 0 auto;
@@ -1629,7 +1639,14 @@ body {
     display: block;
     overflow: visible;
     user-select: none;
+    -webkit-user-select: none;
     will-change: transform;
+    /* iOS/iPadOS Safari's native long-press "callout" (the gray highlight +
+       popup it shows on its own long-press handling for tappable content)
+       fights with the app's own long-press-for-context-menu and touch-pan
+       gestures — this is the "wants to highlight the slide" behavior on
+       iPad. -webkit-user-select alone doesn't suppress it; this does. */
+    -webkit-touch-callout: none;
     /* Without this, iOS/iPadOS Safari intercepts the very first touch of a
        drag to decide whether to pan/zoom the page, so custom move/resize/
        rotate gestures via Pointer Events never even start. */
