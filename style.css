@@ -872,12 +872,10 @@ body {
 /* Empty lines in a list: visible height but no bullet/number marker */
 [data-list-type] > li[data-empty-line="1"]::before { content: "" !important; }
 
-/* PowerPoint-style multi-level bullets: indent 1 = circle, indent 2 = square */
+/* Every nesting level renders the same chosen marker — nesting is real
+   (a <ul>/<ol> nested inside a <li>), so indentation already comes from the
+   browser's own list margins without needing a per-level marker swap. */
 [data-list-type="bullet"]      > li::before { content: "\2022\00a0"; }
-[data-list-type="bullet"]      > li[data-indent="1"]::before { content: "\25E6\00a0"; }
-[data-list-type="bullet"]      > li[data-indent="2"]::before { content: "\25AA\00a0"; }
-[data-list-type="bullet"]      > li[data-indent="3"]::before { content: "\2013\00a0"; }
-[data-list-type="bullet"]      > li[data-indent="4"]::before { content: "\25E6\00a0"; }
 [data-list-type="circle"]      > li::before { content: "\25E6\00a0"; }
 [data-list-type="square"]      > li::before { content: "\25AA\00a0"; }
 [data-list-type="dash"]        > li::before { content: "\2013\00a0"; }

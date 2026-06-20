@@ -5888,12 +5888,6 @@ const listStyleOpts       = document.querySelectorAll(".list-style-opt");
 const BULLET_TYPES = new Set(["bullet","circle","square","dash","arrow","check","star"]);
 const NUMBER_TYPES = new Set(["number","alpha-upper","alpha-lower","roman-upper","roman-lower"]);
 
-function getEffectiveListType() {
-    const { div: editDiv, obj: editObj } = getActiveTextEditContext();
-    if (editDiv && editDiv.isContentEditable && editObj) return getCurrentLiType() || editObj.list || "none";
-    return getTextTargets()[0]?.list || "none";
-}
-
 function closeAllListMenus() {
     bulletListMenu.style.display = "none";
     numberedListMenu.style.display = "none";
@@ -6083,8 +6077,31 @@ fontBoldBtn.onclick = () => applyFormatting(() => document.execCommand("bold"), 
 fontItalicBtn.onclick = () => applyFormatting(() => document.execCommand("italic"), o => { o.italic = !o.italic; });
 fontUnderlineBtn.onclick = () => applyFormatting(() => document.execCommand("underline"), o => { o.underline = !o.underline; });
 fontStrikeBtn.onclick = () => applyFormatting(() => document.execCommand("strikethrough"), o => { o.strikethrough = !o.strikethrough; });
-indentDecBtn.onclick = () => applyToTextSelection(o => { o.indent = Math.max(0, (o.indent || 0) - 1); });
-indentIncBtn.onclick = () => applyToTextSelection(o => { o.indent = Math.min(6, (o.indent || 0) + 1); });
+// Inside a list, indent/outdent means list nesting level (native
+// execCommand, real nested <ul>/<ol>); otherwise it's the existing
+// paragraph-level obj.indent, unchanged.
+indentDecBtn.onclick = () => {
+    const { div: editDiv, obj: editObj } = getActiveTextEditContext();
+    if (editDiv && editDiv.isContentEditable && editObj && listsInSelection(editDiv).length) {
+        pushHistory(true);
+        document.execCommand("outdent");
+        editObj.text = getTextBoxContent(editDiv, editObj);
+        editDiv.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
+    }
+    applyToTextSelection(o => { o.indent = Math.max(0, (o.indent || 0) - 1); });
+};
+indentIncBtn.onclick = () => {
+    const { div: editDiv, obj: editObj } = getActiveTextEditContext();
+    if (editDiv && editDiv.isContentEditable && editObj && listsInSelection(editDiv).length) {
+        pushHistory(true);
+        document.execCommand("indent");
+        editObj.text = getTextBoxContent(editDiv, editObj);
+        editDiv.dispatchEvent(new Event("input", { bubbles: true }));
+        return;
+    }
+    applyToTextSelection(o => { o.indent = Math.min(6, (o.indent || 0) + 1); });
+};
 pasteBtn.onclick = () => pasteClipboard();
 cutBtn.onclick = () => cutSelection();
 copyBtn.onclick = () => copySelection();
@@ -6103,10 +6120,12 @@ textAlignBtns.forEach(btn => {
     btn.onclick = () => applyToTextSelection(o => { o.align = btn.dataset.textalign; });
 });
 // Quick-toggle: bullet list
-bulletListBtn.onclick = () => {
-    const cur = getEffectiveListType();
-    applyListStyle(BULLET_TYPES.has(cur) ? "none" : "bullet");
-};
+// applyListStyle already does its own toggle detection from the live cursor
+// position (listsInSelection) — deciding here too, from the coarser
+// object-level obj.list, could disagree with it (e.g. obj.list reporting
+// the document's majority list type while the cursor sits on a plain line)
+// and fire the opposite of what the cursor position actually calls for.
+bulletListBtn.onclick = () => applyListStyle("bullet");
 
 // Caret: open bullet style picker
 bulletListCaretBtn.onclick = () => {
@@ -6121,10 +6140,7 @@ bulletListCaretBtn.onclick = () => {
 };
 
 // Quick-toggle: numbered list
-numberedListBtn.onclick = () => {
-    const cur = getEffectiveListType();
-    applyListStyle(NUMBER_TYPES.has(cur) ? "none" : "number");
-};
+numberedListBtn.onclick = () => applyListStyle("number");
 
 // Caret: open numbered style picker
 numberedListCaretBtn.onclick = () => {
@@ -6171,300 +6187,116 @@ function getCurrentLiType() {
     return null;
 }
 
-// Splits a plain-text contentEditable div into lines and finds the cursor's line index.
-// Handles both <br>-separated and <div>/<p>-wrapped lines (both appear from browser Enter).
-function splitPlainTextAtCursor(div, range) {
-    const lines = [];
-    let currentParts = [];
-    let cursorLine = 0;
-    let cursorFound = false;
-    const startNode = range?.startContainer;
-
-    const flushLine = () => { lines.push(currentParts.join("")); currentParts = []; };
-
-    const findCursorIn = (node) => {
-        if (cursorFound) return;
-        if (node === startNode) { cursorLine = lines.length; cursorFound = true; return; }
-        if (node.nodeType !== Node.ELEMENT_NODE) return;
-        const tw = document.createTreeWalker(node, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT);
-        let n;
-        while ((n = tw.nextNode())) {
-            if (n === startNode) { cursorLine = lines.length; cursorFound = true; return; }
+// Returns every <ul>/<ol> element that the current selection touches (or, for
+// a collapsed cursor, the single list it's inside) within editDiv. This is
+// the only "where am I in the list structure" query the new engine needs —
+// everything else is delegated to the browser via execCommand.
+function listsInSelection(editDiv) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return [];
+    const range = sel.getRangeAt(0);
+    if (range.collapsed) {
+        let node = range.startContainer;
+        while (node && node !== editDiv) {
+            if (node.tagName === "UL" || node.tagName === "OL") return [node];
+            node = node.parentNode;
         }
-    };
+        return [];
+    }
+    return [...editDiv.querySelectorAll("ul,ol")].filter(list => {
+        try { return range.intersectsNode(list); } catch { return false; }
+    });
+}
 
-    for (const child of div.childNodes) {
+// Converts contentEditable HTML containing <br>/<div>/<p> line breaks (as
+// produced by plain, non-list typing) into an array of per-line HTML strings.
+function htmlToLines(html) {
+    const tmp = document.createElement("div");
+    tmp.innerHTML = html || "";
+    const lines = [];
+    let cur = [];
+    for (const child of tmp.childNodes) {
         if (child.nodeType === Node.TEXT_NODE) {
-            findCursorIn(child);
-            currentParts.push(child.textContent);
+            cur.push(child.textContent);
         } else if (child.nodeType === Node.ELEMENT_NODE) {
             if (child.tagName === "BR") {
-                findCursorIn(child);
-                flushLine();
+                lines.push(cur.join("")); cur = [];
             } else if (child.tagName === "DIV" || child.tagName === "P") {
-                if (currentParts.length > 0) flushLine();
-                findCursorIn(child);
-                // A bare <br> is a browser placeholder for an empty block — strip it so
-                // we don't get a spurious <br> token when the line content is joined later.
+                if (cur.length > 0) { lines.push(cur.join("")); cur = []; }
                 lines.push((child.innerHTML || "").replace(/^<br\s*\/?>$/i, ""));
             } else {
-                findCursorIn(child);
-                currentParts.push(child.outerHTML);
+                cur.push(child.outerHTML);
             }
         }
     }
-    if (currentParts.length > 0 || lines.length === 0) lines.push(currentParts.join(""));
-
-    return { lines, cursorLine: Math.max(0, Math.min(cursorLine, lines.length - 1)) };
+    if (cur.length > 0 || lines.length === 0) lines.push(cur.join(""));
+    return lines;
 }
 
+// Applies (or removes, or restyles) list formatting. Every structural edit —
+// creating a list, removing one, converting bullet↔number — goes through the
+// browser's own document.execCommand, the same mechanism this codebase
+// already trusts for Bold/Italic/Underline (see applyFormatting above): the
+// browser places the cursor correctly and handles Enter/Backspace inside a
+// list natively, so there is no manual DOM-rebuild-then-guess-the-cursor
+// code left to get wrong. The only custom work is tagging the resulting
+// <ul>/<ol> with data-list-type so CSS can draw the chosen bullet glyph or
+// number format (a purely cosmetic layer execCommand has no concept of).
 function applyListStyle(type) {
     closeAllListMenus();
     const { div: editDiv, obj: editObj } = getActiveTextEditContext();
 
-    // ── Toggle logic ──────────────────────────────────────────────────────────
-    // With a SELECTION (text highlighted): toggle off if all selected lines already have this type.
-    // With a CURSOR ONLY (nothing selected): act as a "generator" — always apply, never toggle.
-    // Without edit mode: object-level toggle (selected object = implicit selection).
-    if (type !== "none") {
-        if (editDiv && editDiv.isContentEditable && editObj) {
-            const sel = window.getSelection();
-            const allLisToggle = [...editDiv.querySelectorAll("li")];
-            if (allLisToggle.length > 0 && sel && sel.rangeCount > 0 && !sel.getRangeAt(0).collapsed) {
-                const range = sel.getRangeAt(0);
-                const affected = allLisToggle.filter(li => { try { return range.intersectsNode(li); } catch { return false; } });
-                if (affected.length > 0 && affected.every(li => li.closest("[data-list-type]")?.dataset.listType === type)) {
-                    type = "none";
-                }
-            }
-            // collapsed cursor → no toggle (generator mode)
-        } else {
+    if (!editDiv || !editDiv.isContentEditable || !editObj) {
+        // Not in typing mode → apply to the whole selected object(s). There's
+        // no live DOM to drive via execCommand here; setTextBoxContent builds
+        // the list from obj.text the next time the object is rendered/edited.
+        // Re-clicking the same already-active style toggles it off, same as
+        // the in-edit-mode case below.
+        if (type !== "none") {
             const textObjs = getTextTargets();
             if (textObjs.length > 0 && (textObjs[0].list || "none") === type) type = "none";
         }
-    }
-
-    if (!editDiv || !editDiv.isContentEditable || !editObj) {
-        // Not in typing mode → apply list to the whole selected object(s)
         applyToTextSelection(o => {
-            if (type === "none" && o.list && o.list !== "none" && o.text) {
-                // List → plain text: convert \n separators back to <br>
-                o.text = o.text.split("\n").join("<br>");
-            } else if (type !== "none" && (!o.list || o.list === "none") && o.text) {
-                // Plain text → list: text may be stored as contentEditable HTML
-                // (e.g. "Line 1<div>Line 2</div><div>Line 3</div>") which
-                // setTextBoxContent cannot parse as separate lines. Normalize to \n.
-                if (o.text.includes("<div") || o.text.includes("<p")) {
-                    const tmp = document.createElement("div");
-                    tmp.innerHTML = o.text;
-                    const lines = [];
-                    let cur = [];
-                    for (const child of tmp.childNodes) {
-                        if (child.nodeType === Node.TEXT_NODE) {
-                            cur.push(child.textContent);
-                        } else if (child.nodeType === Node.ELEMENT_NODE) {
-                            if (child.tagName === "BR") {
-                                lines.push(cur.join("")); cur = [];
-                            } else if (child.tagName === "DIV" || child.tagName === "P") {
-                                if (cur.length > 0) { lines.push(cur.join("")); cur = []; }
-                                lines.push((child.innerHTML || "").replace(/^<br\s*\/?>$/i, ""));
-                            } else {
-                                cur.push(child.outerHTML);
-                            }
-                        }
-                    }
-                    if (cur.length > 0 || lines.length === 0) lines.push(cur.join(""));
-                    o.text = lines.join("\n");
-                }
+            if (type !== "none" && (!o.list || o.list === "none") && o.text && (o.text.includes("<div") || o.text.includes("<p") || o.text.includes("<br"))) {
+                o.text = htmlToLines(o.text).join("\n");
             }
-            o.list = type; delete o.paragraphListTypes;
+            o.list = type;
+            delete o.paragraphListTypes;
+            delete o.paragraphIndents;
         });
         syncFontRibbon();
         return;
     }
 
-    const sel = window.getSelection();
-    const allLis = [...editDiv.querySelectorAll("li")];
+    pushHistory(true);
+    editDiv.focus();
 
-    // Helper: restore cursor to a specific <li> index after any DOM rebuild, and sync the
-    // properties textarea (via the input → syncContent listener already attached to editDiv).
-    const restoreCursor = (liIdx) => {
-        const lis = editDiv.querySelectorAll("li");
-        const target = lis[Math.min(Math.max(liIdx, 0), lis.length - 1)];
-        if (target) {
-            const r = document.createRange();
-            r.setStart(target, 0);
-            r.collapse(true);
-            const s = window.getSelection();
-            if (s) { s.removeAllRanges(); s.addRange(r); }
-        }
-        editDiv.dispatchEvent(new Event("input", { bubbles: true })); // syncs properties textarea
-    };
+    // Deliberately uses listsInSelection (our own DOM query) rather than
+    // document.queryCommandState — the latter goes stale/unreliable right
+    // after execCommand has just mutated the DOM out from under the live
+    // selection (observed: a second consecutive toggle would silently no-op
+    // because queryCommandState still reported the pre-mutation state).
+    const existing = listsInSelection(editDiv);
 
-    // Capture cursor's current <li> index before any rebuild
-    let cursorLiIdx = 0;
-    if (sel && sel.rangeCount > 0) {
-        let node = sel.getRangeAt(0).startContainer;
-        while (node && node !== editDiv) {
-            if (node.tagName === "LI") { const i = allLis.indexOf(node); if (i >= 0) cursorLiIdx = i; break; }
-            node = node.parentNode;
-        }
+    // Re-clicking a style that's already fully active on the selection turns
+    // it off, matching how a pressed toggle button behaves on a second click.
+    if (type !== "none" && existing.length > 0 && existing.every(l => l.dataset.listType === type)) {
+        type = "none";
     }
 
-    if (allLis.length === 0) {
-        // No list structure yet (plain text in edit mode)
-        if (type === "none") { syncFontRibbon(); return; }
-        pushHistory();
-
-        const range0 = (sel && sel.rangeCount > 0) ? sel.getRangeAt(0) : null;
-        const { lines: lineHtmls, cursorLine } = splitPlainTextAtCursor(editDiv, range0);
-
-        let newLineHtmls, newTypes, focusIdx;
-
-        if (!range0 || range0.collapsed) {
-            // Cursor only: convert just the current line
-            newLineHtmls = lineHtmls;
-            // Empty lines never receive a list marker
-            newTypes = lineHtmls.map((html, i) => (i === cursorLine && html.trim()) ? type : "none");
-            focusIdx = cursorLine;
-        } else {
-            // Selection: apply only to the lines covered by the selection
-            const { cursorLine: selStart } = splitPlainTextAtCursor(editDiv, { startContainer: range0.startContainer, startOffset: range0.startOffset });
-            const { cursorLine: selEnd }   = splitPlainTextAtCursor(editDiv, { startContainer: range0.endContainer,   startOffset: range0.endOffset });
-            // If selection ends at offset 0 of a new line, don't include that line
-            const lastLine = (range0.endOffset === 0 && selEnd > selStart) ? selEnd - 1 : selEnd;
-            newLineHtmls = lineHtmls;
-            // Empty lines in the selection stay unmarked
-            newTypes = lineHtmls.map((html, i) => (i >= selStart && i <= lastLine && html.trim()) ? type : "none");
-            focusIdx = selStart;
-        }
-
-        editDiv.innerHTML = "";
-        let idx = 0;
-        while (idx < newLineHtmls.length) {
-            const curType = newTypes[idx];
-            const block = createListBlock(curType);
-            while (idx < newLineHtmls.length && newTypes[idx] === curType) {
-                const li = document.createElement("li");
-                li.innerHTML = newLineHtmls[idx];
-                block.appendChild(li);
-                idx++;
-            }
-            editDiv.appendChild(block);
-        }
-
-        editObj.list = type;
-        delete editObj.paragraphListTypes;
-        delete editObj.paragraphIndents;
-        editObj.text = getTextBoxContent(editDiv, editObj);
-        restoreCursor(focusIdx);
-        syncFontRibbon();
-        return;
+    if (type === "none") {
+        if (existing.some(l => l.tagName === "UL")) document.execCommand("insertUnorderedList");
+        if (existing.some(l => l.tagName === "OL")) document.execCommand("insertOrderedList");
+    } else if (BULLET_TYPES.has(type)) {
+        if (!(existing.length > 0 && existing.every(l => l.tagName === "UL"))) document.execCommand("insertUnorderedList");
+        listsInSelection(editDiv).forEach(l => { if (l.tagName === "UL") l.dataset.listType = type; });
+    } else if (NUMBER_TYPES.has(type)) {
+        if (!(existing.length > 0 && existing.every(l => l.tagName === "OL"))) document.execCommand("insertOrderedList");
+        listsInSelection(editDiv).forEach(l => { if (l.tagName === "OL") l.dataset.listType = type; });
     }
 
-    // Determine which lines are affected by the current selection
-    let affectedLis;
-    if (!sel || sel.rangeCount === 0) {
-        affectedLis = allLis;
-    } else {
-        const range = sel.getRangeAt(0);
-        if (range.collapsed) {
-            // Cursor only → change just the current item's type
-            let node = range.startContainer;
-            let foundLi = null;
-            while (node && node !== editDiv) {
-                if (node.tagName === "LI") { foundLi = node; break; }
-                node = node.parentNode;
-            }
-            affectedLis = foundLi ? [foundLi] : allLis;
-        } else {
-            // Selection → find all <li> items that intersect the highlighted range
-            affectedLis = allLis.filter(li => { try { return range.intersectsNode(li); } catch { return false; } });
-            if (affectedLis.length === 0) affectedLis = allLis;
-        }
-    }
-
-    // All lines affected → full-object operation (rebuild in-place, user stays in edit mode)
-    if (affectedLis.length === allLis.length) {
-        if (type === "none") {
-            pushHistory();
-            // Strip bare <br> browser adds as cursor placeholder in empty <li> to avoid
-            // double line breaks when joining (empty li "<br>" + join "<br>" = "<br><br>").
-            const lines = allLis.map(li => li.innerHTML.replace(/^<br\s*\/?>$/i, ""));
-            editDiv.innerHTML = lines.join("<br>");
-            editObj.text = editDiv.innerHTML;
-            editObj.list = "none";
-            delete editObj.paragraphListTypes;
-            delete editObj.paragraphIndents;
-            // Cursor at start since list items are gone
-            const r = document.createRange(); r.setStart(editDiv, 0); r.collapse(true);
-            const s = window.getSelection(); if (s) { s.removeAllRanges(); s.addRange(r); }
-            editDiv.dispatchEvent(new Event("input", { bubbles: true }));
-            syncFontRibbon();
-            return;
-        }
-        // Change type for all lines: snapshot live DOM first (may have unsaved edits)
-        pushHistory();
-        const liveText = getTextBoxContent(editDiv, editObj);
-        editObj.list = type;
-        editObj.text = liveText;
-        delete editObj.paragraphListTypes;
-        delete editObj.paragraphIndents;
-        setTextBoxContent(editDiv, editObj);
-        editObj.text = getTextBoxContent(editDiv, editObj);
-        restoreCursor(cursorLiIdx);
-        syncFontRibbon();
-        return;
-    }
-
-    // Partial application: only affected lines change type
-    pushHistory();
-    const affectedSet = new Set(affectedLis);
-    const newTypes = allLis.map((li) => {
-        // Empty lines never receive a list marker
-        if (affectedSet.has(li)) return (li.textContent.trim() ? type : "none");
-        return li.closest("ul,ol")?.dataset.listType || editObj.list || "bullet";
-    });
-
-    // If every line ends up "none", convert the whole box to plain text
-    if (newTypes.every(t => t === "none")) {
-        const lines = allLis.map(li => li.innerHTML.replace(/^<br\s*\/?>$/i, ""));
-        editDiv.innerHTML = lines.join("<br>");
-        editObj.text = editDiv.innerHTML;
-        editObj.list = "none";
-        delete editObj.paragraphListTypes;
-        delete editObj.paragraphIndents;
-        const r = document.createRange(); r.setStart(editDiv, 0); r.collapse(true);
-        const s = window.getSelection(); if (s) { s.removeAllRanges(); s.addRange(r); }
-        editDiv.dispatchEvent(new Event("input", { bubbles: true }));
-        syncFontRibbon();
-        return;
-    }
-
-    const typeCounts = {};
-    newTypes.forEach(t => { typeCounts[t] = (typeCounts[t] || 0) + 1; });
-    const nonNoneEntries = Object.entries(typeCounts).filter(([t]) => t !== "none");
-    editObj.list = nonNoneEntries.length
-        ? nonNoneEntries.sort((a, b) => b[1] - a[1])[0][0]
-        : (editObj.list && editObj.list !== "none" ? editObj.list : "bullet");
-    editObj.paragraphListTypes = newTypes;
-
-    const items = allLis.map((li, i) => ({ html: li.innerHTML, type: newTypes[i] }));
-    editDiv.innerHTML = "";
-    let i = 0;
-    while (i < items.length) {
-        const curType = items[i].type;
-        const block = createListBlock(curType);
-        while (i < items.length && items[i].type === curType) {
-            const newLi = document.createElement("li");
-            newLi.innerHTML = items[i].html;
-            block.appendChild(newLi);
-            i++;
-        }
-        editDiv.appendChild(block);
-    }
     editObj.text = getTextBoxContent(editDiv, editObj);
-    restoreCursor(cursorLiIdx);
+    editDiv.dispatchEvent(new Event("input", { bubbles: true }));
     syncFontRibbon();
 }
 
@@ -8336,42 +8168,54 @@ function createListBlock(type) {
     return el;
 }
 
+// Builds nested <ul>/<ol data-list-type> blocks from parallel per-line
+// arrays (text/type/depth), grouping consecutive same-type-same-depth runs
+// into one block and recursing into the last <li> of a run whenever the next
+// line is more deeply indented — i.e. real nested lists, not a flat
+// data-indent attribute. Returns once `lines` is exhausted.
+function buildListDom(container, lines, types, depths, isCode, codeLang) {
+    const commentState = { inBlockComment: false };
+    let i = 0;
+    function buildLevel(parent, depth) {
+        while (i < lines.length && depths[i] >= depth) {
+            if (types[i] === "none") {
+                // A plain (non-list) line interleaved at the top level.
+                const lineDiv = document.createElement("div");
+                lineDiv.innerHTML = lines[i] || "<br>";
+                parent.appendChild(lineDiv);
+                i++;
+                continue;
+            }
+            const curType = types[i];
+            const block = createListBlock(curType);
+            while (i < lines.length && depths[i] === depth && types[i] === curType) {
+                const li = document.createElement("li");
+                const isEmpty = !isCode && (lines[i] || "").replace(/<br\s*\/?>/gi, "").trim() === "";
+                if (isEmpty) { li.dataset.emptyLine = "1"; li.innerHTML = "<br>"; }
+                else if (isCode) { li.innerHTML = codeLineToHtml(lines[i], codeLang, commentState); }
+                else { li.innerHTML = lines[i]; }
+                block.appendChild(li);
+                i++;
+                if (i < lines.length && depths[i] > depth && types[i] !== "none") buildLevel(li, depth + 1);
+            }
+            parent.appendChild(block);
+        }
+    }
+    buildLevel(container, 0);
+}
+
 function setTextBoxContent(div, obj, slideIndex = state.current) {
     div.innerHTML = "";
     const text = obj.field ? fieldText(obj, slideIndex) : obj.text;
     if (obj.list && obj.list !== "none") {
         // Normalize: <br> tags left over from a previous un-listing count as line breaks
         const lines = (text || "").replace(/<br\s*\/?>/gi, "\n").split("\n");
-        const lineTypes = obj.paragraphListTypes && obj.paragraphListTypes.length === lines.length
+        const types = obj.paragraphListTypes && obj.paragraphListTypes.length === lines.length
             ? obj.paragraphListTypes
             : lines.map(() => obj.list);
-        const commentState = { inBlockComment: false };
-        const lineIndents = obj.paragraphIndents && obj.paragraphIndents.length === lines.length
+        const depths = obj.paragraphIndents && obj.paragraphIndents.length === lines.length
             ? obj.paragraphIndents : lines.map(() => 0);
-        let i = 0;
-        while (i < lines.length) {
-            const curType = lineTypes[i] || obj.list;
-            const block = createListBlock(curType);
-            while (i < lines.length && (lineTypes[i] || obj.list) === curType) {
-                const li = document.createElement("li");
-                // Empty lines stay in the list block (for proper line height) but
-                // get data-empty-line so CSS suppresses the bullet/number marker.
-                const isEmpty = !obj.isCode && lines[i].replace(/<br\s*\/?>/gi, "").trim() === "";
-                if (isEmpty) {
-                    li.dataset.emptyLine = "1";
-                    li.innerHTML = "<br>"; // <br> gives the li visible height
-                } else if (obj.isCode) {
-                    li.innerHTML = codeLineToHtml(lines[i], obj.codeLang, commentState);
-                } else {
-                    li.innerHTML = lines[i];
-                }
-                const indent = lineIndents[i] || 0;
-                if (indent > 0) { li.dataset.indent = String(indent); li.style.paddingLeft = (indent * 1.4) + "em"; }
-                block.appendChild(li);
-                i++;
-            }
-            div.appendChild(block);
-        }
+        buildListDom(div, lines, types, depths, obj.isCode, obj.codeLang);
         return;
     } else if (obj.isCode) {
         setCodeLinesHtml(div, (text || "").split("\n"), obj.codeLang);
@@ -8419,35 +8263,104 @@ function getCodeText(div) {
 // Returns the editable content of a text box. For regular text boxes this
 // is inline HTML (so per-selection formatting like bold/italic/color from
 // the right-click menu survives), while code blocks stay plain text.
+// Recursively walks a <ul>/<ol data-list-type> block, descending into a
+// nested list whenever a <li> contains one, and pushing {line, type, depth}
+// for every item along the way. This is the sole place list metadata is
+// derived — always freshly from the live DOM, never incrementally patched —
+// which is what makes it trustworthy where the old per-edit-site bookkeeping
+// wasn't.
+function collectListBlock(block, depth, lines, types, depths, isCode) {
+    const type = block.dataset.listType || (block.tagName === "OL" ? "number" : "bullet");
+    for (const child of block.children) {
+        if (child.tagName === "UL" || child.tagName === "OL") {
+            // execCommand("indent") puts the new sub-list as a direct
+            // sibling of <li> elements rather than nested inside one (not
+            // valid list HTML, but it's what Chrome actually produces) — it
+            // belongs to whichever <li> immediately precedes it, which is
+            // exactly where it lands in `lines` since we process in order.
+            collectListBlock(child, depth + 1, lines, types, depths, isCode);
+            continue;
+        }
+        if (child.tagName !== "LI") continue;
+        const li = child;
+        const nested = [...li.children].find(c => c.tagName === "UL" || c.tagName === "OL");
+        let ownHtml = li.innerHTML;
+        if (nested) {
+            const tmp = document.createElement("div");
+            tmp.innerHTML = li.innerHTML;
+            const nestedInTmp = [...tmp.children].find(c => c.tagName === "UL" || c.tagName === "OL");
+            if (nestedInTmp) nestedInTmp.remove();
+            ownHtml = tmp.innerHTML;
+        }
+        // Empty-line markers (data-empty-line) and Chrome's bare <br> placeholder
+        // both read back as "" so setTextBoxContent doesn't create a phantom
+        // extra line when it normalises <br> tags into newlines on rebuild.
+        const isEmptyLine = li.dataset.emptyLine || /^(<br\s*\/?>\s*)+$/i.test(ownHtml);
+        lines.push(isEmptyLine ? "" : (isCode ? getCodeText(li) : ownHtml));
+        types.push(type);
+        depths.push(depth);
+        if (nested) collectListBlock(nested, depth + 1, lines, types, depths, isCode);
+    }
+}
+
 function getTextBoxContent(div, obj) {
-    if (obj.list && obj.list !== "none") {
-        const blocks = [...div.querySelectorAll("ul,ol")];
-        if (blocks.length === 0) return div.innerHTML || "";
-        const lines = [], types = [], indents = [];
-        for (const block of blocks) {
-            const t = block.dataset.listType || (block.tagName === "OL" ? "number" : "bullet");
-            for (const li of block.children) {
-                if (li.tagName === "LI") {
-                    // Empty-line markers (data-empty-line) and Chrome's bare <br> placeholder
-                    // both read back as "" so setTextBoxContent doesn't create a phantom extra line
-                    // when it normalises <br> tags into newlines during re-render.
-                    const liHtml = li.dataset.emptyLine ? "" : li.innerHTML.replace(/^(<br\s*\/?>\s*)+$/i, "");
-                    lines.push(obj.isCode ? getCodeText(li) : liHtml);
-                    types.push(t);
-                    indents.push(parseInt(li.dataset.indent || "0", 10));
+    if (div.querySelector("ul,ol")) {
+        const lines = [], types = [], depths = [];
+        // Plain (non-list) top-level content accumulates here until a <br>/
+        // block boundary flushes it into one line — a <br> is a separator
+        // *between* lines, not a line of its own, so "First<br>Second" must
+        // become two lines, not three (one of the actual bugs the old
+        // per-node-is-a-line walk had on this exact mixed-content case).
+        let cur = [];
+        const flushPlain = () => { lines.push(cur.join("")); types.push("none"); depths.push(0); cur = []; };
+        for (const child of div.childNodes) {
+            if (child.nodeType === Node.ELEMENT_NODE && (child.tagName === "UL" || child.tagName === "OL")) {
+                if (cur.length > 0) flushPlain();
+                collectListBlock(child, 0, lines, types, depths, obj.isCode);
+            } else if (child.nodeType === Node.TEXT_NODE) {
+                cur.push(child.textContent);
+            } else if (child.nodeType === Node.ELEMENT_NODE && child.tagName === "BR") {
+                flushPlain();
+            } else if (child.nodeType === Node.ELEMENT_NODE && (child.tagName === "DIV" || child.tagName === "P")) {
+                if (cur.length > 0) flushPlain();
+                // Converting a single block-level line into a list is exactly
+                // when execCommand("insertUnorderedList"/"insertOrderedList")
+                // tends to wrap the new <ul>/<ol> *inside* the existing line's
+                // <div> rather than replacing it outright — treat that div as
+                // a transparent wrapper instead of reading its raw innerHTML
+                // (which would otherwise serialize literal "<ul>...</ul>"
+                // markup as if it were plain text).
+                const innerList = [...child.children].find(c => c.tagName === "UL" || c.tagName === "OL");
+                if (innerList) {
+                    collectListBlock(innerList, 0, lines, types, depths, obj.isCode);
+                } else {
+                    lines.push((child.innerHTML || "").replace(/^<br\s*\/?>$/i, "")); types.push("none"); depths.push(0);
                 }
+            } else if (child.nodeType === Node.ELEMENT_NODE) {
+                cur.push(child.outerHTML);
             }
         }
-        const allSame = types.every(t => t === types[0]);
-        if (allSame) {
-            if (types[0] && types[0] !== "none") obj.list = types[0]; // never downgrade to "none"
-            delete obj.paragraphListTypes;
+        if (cur.length > 0) flushPlain();
+        const nonNone = types.filter(t => t !== "none");
+        if (nonNone.length > 0) {
+            const counts = {};
+            nonNone.forEach(t => { counts[t] = (counts[t] || 0) + 1; });
+            obj.list = Object.entries(counts).sort((a, b) => b[1] - a[1])[0][0];
         } else {
-            obj.paragraphListTypes = types;
+            obj.list = "none";
         }
-        if (indents.some(n => n > 0)) { obj.paragraphIndents = indents; }
-        else { delete obj.paragraphIndents; }
+        if (types.every(t => t === types[0])) delete obj.paragraphListTypes;
+        else obj.paragraphListTypes = types;
+        if (depths.some(d => d > 0)) obj.paragraphIndents = depths;
+        else delete obj.paragraphIndents;
         return lines.join("\n");
+    }
+    if (obj.list && obj.list !== "none") {
+        // No <ul>/<ol> left in the DOM at all (e.g. the user just removed the
+        // last one) — fully de-list rather than leaving stale list state.
+        obj.list = "none";
+        delete obj.paragraphListTypes;
+        delete obj.paragraphIndents;
     }
     if (obj.isCode) return getCodeLines(div).join("\n");
     if (obj.isEquation) return div.textContent;
@@ -8606,96 +8519,25 @@ function enterTextEditMode(div, obj, skipInitialSelectAll = false, deferFocus = 
             if (ke.key === "Tab" && !ke.ctrlKey && !ke.metaKey) {
                 ke.preventDefault();
                 if (inList) {
-                    // Tab / Shift+Tab: change indent level of current list item
-                    const sel = window.getSelection();
-                    if (sel && sel.rangeCount > 0 && sel.getRangeAt(0).collapsed) {
-                        let li = sel.getRangeAt(0).startContainer;
-                        while (li && li !== div) { if (li.tagName === "LI") break; li = li.parentNode; }
-                        if (li && li.tagName === "LI") {
-                            const cur = parseInt(li.dataset.indent || "0", 10);
-                            const next = ke.shiftKey ? Math.max(0, cur - 1) : Math.min(4, cur + 1);
-                            if (next === 0) { delete li.dataset.indent; li.style.paddingLeft = ""; }
-                            else { li.dataset.indent = String(next); li.style.paddingLeft = (next * 1.4) + "em"; }
-                            syncContent();
-                            return;
-                        }
-                    }
+                    // Tab / Shift+Tab inside a list: native indent/outdent —
+                    // creates/removes a real nested <ul>/<ol> and the browser
+                    // keeps the cursor in place on its own.
+                    document.execCommand(ke.shiftKey ? "outdent" : "indent");
+                    syncContent();
+                    return;
                 }
                 insertTextAtCaret("\t"); syncContent();
                 return;
             }
 
-            // ── Backspace at start of a bulleted line → remove the bullet from that line only ──
-            if (ke.key === "Backspace" && inList) {
-                const sel0 = window.getSelection();
-                if (sel0 && sel0.rangeCount > 0 && sel0.getRangeAt(0).collapsed) {
-                    const r0 = sel0.getRangeAt(0);
-                    let li0 = r0.startContainer;
-                    while (li0 && li0 !== div) { if (li0.tagName === "LI") break; li0 = li0.parentNode; }
-                    if (li0 && li0.tagName === "LI") {
-                        const listEl0 = li0.closest("ul,ol");
-                        const liType = listEl0 ? (listEl0.dataset.listType || "bullet") : null;
-                        if (liType && liType !== "none") {
-                            // Check cursor at very start of li
-                            const testR = document.createRange();
-                            testR.selectNodeContents(li0);
-                            testR.setEnd(r0.startContainer, r0.startOffset);
-                            if (testR.toString().length === 0 && testR.cloneContents().textContent === "") {
-                                ke.preventDefault();
-
-                                // Split listEl0 around li0:
-                                //   items before li0 stay in listEl0 (or listEl0 is removed)
-                                //   li0 moves into a new "none" block
-                                //   items after li0 go into a new same-type block
-                                const siblings = [...listEl0.children].filter(c => c.tagName === "LI");
-                                const idx = siblings.indexOf(li0);
-                                const before = siblings.slice(0, idx);
-                                const after  = siblings.slice(idx + 1);
-
-                                const noneBlock = createListBlock("none");
-                                noneBlock.appendChild(li0); // li0 moves out of listEl0
-
-                                let afterBlock = null;
-                                if (after.length > 0) {
-                                    afterBlock = createListBlock(liType);
-                                    after.forEach(sib => afterBlock.appendChild(sib));
-                                }
-
-                                if (before.length === 0) {
-                                    listEl0.before(noneBlock);
-                                    if (afterBlock) noneBlock.after(afterBlock);
-                                    listEl0.remove();
-                                } else {
-                                    listEl0.after(noneBlock);
-                                    if (afterBlock) noneBlock.after(afterBlock);
-                                }
-
-                                // Cursor at start of li0 (now plain)
-                                const re = document.createRange();
-                                const fc = li0.firstChild;
-                                if (fc && fc.nodeName !== "BR") re.setStart(fc, 0);
-                                else re.setStart(li0, 0);
-                                re.collapse(true);
-                                sel0.removeAllRanges(); sel0.addRange(re);
-
-                                // If no real bullets remain → fully de-list the object
-                                if (!div.querySelector("[data-list-type]:not([data-list-type='none']) > li")) {
-                                    obj.list = "none";
-                                    delete obj.paragraphListTypes;
-                                    delete obj.paragraphIndents;
-                                }
-
-                                syncContent();
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Enter: Chrome handles it naturally — new <li> inherits the current block's type.
-            // Pressing Enter on a bullet line → new bullet. On a "none" line → new plain line.
-            // To remove a bullet, Backspace at the start of the line.
+            // Enter and Backspace inside a list are deliberately left to the
+            // browser's native contentEditable behavior (same reasoning as
+            // Tab above): Enter continues the list with a new <li> of the
+            // same type, and Backspace at the start of an item lifts it out
+            // of the list — both already get the cursor right natively,
+            // which is exactly the class of bug a hand-rolled DOM rebuild
+            // kept getting wrong. syncContent() picks up the result via the
+            // "input" listener registered below.
 
             return;
         }
@@ -13938,6 +13780,44 @@ function htmlInlineToLatex(html) {
     return Array.from(container.childNodes).map(walk).join("");
 }
 
+// Mirrors buildListDom's grouping logic (script.js, near createListBlock) but
+// emits nested \begin{itemize}/\begin{enumerate} environments instead of
+// <ul>/<ol> — walks the same per-line type/depth arrays the editor derives
+// in getTextBoxContent, so a mixed or nested list exports with real LaTeX
+// nesting instead of collapsing to one flat environment.
+function buildLatexListEnv(text, obj) {
+    const lines = (text || "").split("\n");
+    const types = obj.paragraphListTypes && obj.paragraphListTypes.length === lines.length
+        ? obj.paragraphListTypes : lines.map(() => obj.list);
+    const depths = obj.paragraphIndents && obj.paragraphIndents.length === lines.length
+        ? obj.paragraphIndents : lines.map(() => 0);
+    let i = 0;
+    function buildLevel(depth) {
+        let out = "";
+        while (i < lines.length && depths[i] >= depth) {
+            if (types[i] === "none") {
+                out += `${htmlInlineToLatex(lines[i])} `;
+                i++;
+                continue;
+            }
+            const curType = types[i];
+            const env = LIST_ORDERED.has(curType) ? "enumerate" : "itemize";
+            let body = "";
+            while (i < lines.length && depths[i] === depth && types[i] === curType) {
+                let itemBody = htmlInlineToLatex(lines[i]);
+                i++;
+                if (i < lines.length && depths[i] > depth && types[i] !== "none") {
+                    itemBody += " " + buildLevel(depth + 1);
+                }
+                body += `\\item ${itemBody} `;
+            }
+            out += `\\begin{${env}} ${body}\\end{${env}} `;
+        }
+        return out;
+    }
+    return buildLevel(0).trim();
+}
+
 function objectToTikz(obj, imageFiles, slideIndex = state.current) {
     const lines = [];
     if (obj.type === "group") {
@@ -14186,9 +14066,7 @@ function objectToTikz(obj, imageFiles, slideIndex = state.current) {
             if (obj.isEquation) {
                 txt = `$${equationToTex(text, obj.rawTex)}$`;
             } else if (obj.list && obj.list !== "none") {
-                const env = LIST_ORDERED.has(obj.list) ? "enumerate" : "itemize";
-                const items = (text || "").split("\n").map(line => `\\item ${htmlInlineToLatex(line)}`).join(" ");
-                txt = `\\begin{${env}} ${items} \\end{${env}}`;
+                txt = buildLatexListEnv(text, obj);
             } else {
                 txt = htmlInlineToLatex(text);
                 if (obj.underline) txt = `\\underline{${txt}}`;
