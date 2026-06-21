@@ -12,6 +12,17 @@ body {
     display: flex;
     flex-direction: column;
     height: 100vh;
+    /* App chrome (buttons, panels, labels, the canvas itself) is never meant
+       to be text-selected — without this, a resting palm/finger or a stylus
+       drag while inking on iPad can trigger the browser's native text
+       highlight or tap-and-hold callout on whatever UI sits under it (e.g.
+       a nearby panel-collapse arrow), which has nothing to do with what's
+       being drawn. Re-enabled explicitly on the few genuinely-editable
+       surfaces below (slide text boxes; native <input>/<textarea> are
+       exempt from this in every browser regardless). */
+    user-select: none;
+    -webkit-user-select: none;
+    -webkit-touch-callout: none;
 }
 
 /* ---------- Scrollbars ---------- */
@@ -2096,6 +2107,9 @@ body {
     overflow: hidden;
     white-space: pre-wrap;
     word-break: break-word;
+    user-select: text;
+    -webkit-user-select: text;
+    -webkit-touch-callout: default;
 }
 
 /* ---------- Properties panel ---------- */

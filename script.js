@@ -111,7 +111,7 @@ let state = {
     // undo history or saved files even though it lives on `state`.
     inkSettings: {
         ballpoint:   { color: "#1a1a2e", thicknessMm: 0.4, stabilization: 20 },
-        fountain:    { color: "#16213e", thicknessMm: 0.6, stabilization: 30, tipSharpness: 50, pressureSensitivity: 70, tipFlatness: 45 },
+        fountain:    { color: "#16213e", thicknessMm: 0.6, stabilization: 15, tipSharpness: 85, pressureSensitivity: 85, tipFlatness: 0, velocitySensitivity: 55 },
         brush:       { color: "#1a1a2e", thicknessMm: 2.5, stabilization: 35, pressureSensitivity: 80 },
         pencil:      { color: "#3a3a3a", thicknessMm: 0.5, stabilization: 15 },
         highlighter: { color: "#ffeb3b", thicknessMm: 6,   stabilization: 10 },
@@ -1942,18 +1942,46 @@ function widthForPencil(i, pt, points, base) {
 
 function widthForFountain(i, pt, points, base, settings) {
     const n = points.length;
-    const a = points[Math.max(0, i - 1)], b = points[Math.min(n - 1, i + 1)];
-    const theta = Math.atan2(b.y - a.y, b.x - a.x);
+    // Direction: prefer the smoothed unit vector captured live during the
+    // stroke (EMA'd over the *raw* hand movement at capture time — see
+    // inkAddPoint — so the calligraphic edge stays buttery even with dense
+    // coalesced-event sampling, instead of recomputing a noisy tangent from
+    // immediate neighbors, which on densely-sampled fast strokes amplifies
+    // tiny jitter into a flickery nib angle). Falls back to a neighbor
+    // tangent for older saved strokes captured before this field existed.
+    let theta;
+    if (pt.dirX !== undefined && pt.dirY !== undefined) {
+        theta = Math.atan2(pt.dirY, pt.dirX);
+    } else {
+        const a = points[Math.max(0, i - 1)], b = points[Math.min(n - 1, i + 1)];
+        theta = Math.atan2(b.y - a.y, b.x - a.x);
+    }
     const nibAngle = Math.PI / 4; // fixed 45° nib, the classic calligraphy convention
     const angleFactor = Math.abs(Math.cos(theta - nibAngle));
     const flatness = clamp01((settings.tipFlatness ?? 45) / 100);
     const angleWidth = base * (1 - flatness + flatness * angleFactor);
+
     const sens = clamp01((settings.pressureSensitivity ?? 70) / 100);
     const p = pt.pressure ?? 0.5;
     const pressureWidth = angleWidth * (1 - sens + sens * p);
+
+    // Velocity: a real fountain nib lays down less ink the faster it's
+    // dragged (less contact time for ink to flow) — the single biggest cue
+    // that separates "static calligraphy outline" from a pen that feels
+    // alive under a moving hand. speed is in px/ms, captured at point-
+    // capture time; convert to mm/ms so the feel is consistent regardless
+    // of zoom/slide size. ~0.35mm/ms is an unhurried but confident stroke —
+    // calibrated so ordinary handwriting speed variation (not just extreme
+    // flicks) visibly thins/thickens the line, which is most of what makes
+    // it read as "real ink" rather than a uniform vector outline.
+    const velSens = clamp01((settings.velocitySensitivity ?? 55) / 100);
+    const speedMm = (pt.speed ?? 0) / PX_PER_MM;
+    const speedT = clamp01(speedMm / 0.35);
+    const velocityWidth = pressureWidth * (1 - velSens * speedT * 0.72);
+
     const sharpness = clamp01((settings.tipSharpness ?? 50) / 100);
     const taperFraction = 0.02 + sharpness * 0.13; // sharper tip = longer, finer taper to a point
-    return pressureWidth * inkTaper(i, n, taperFraction);
+    return velocityWidth * inkTaper(i, n, taperFraction);
 }
 
 function widthForBrush(i, pt, points, base, settings) {
@@ -1997,19 +2025,52 @@ function inkBeginStroke(tool, pt, pressure) {
     inkDraw = {
         penType, settings,
         smoothed: { x: pt.x, y: pt.y },
-        points: [{ x: pt.x, y: pt.y, pressure }],
+        points: [{ x: pt.x, y: pt.y, pressure, speed: 0, dirX: 1, dirY: 0 }],
+        lastRaw: { x: pt.x, y: pt.y, t: performance.now() },
+        speed: 0, dirX: 1, dirY: 0,
     };
     renderInkPreview();
 }
 
-function inkAddPoint(pt, pressure) {
+// `t` is an optional capture timestamp (ms) for this sample — pass the
+// originating PointerEvent's timeStamp when iterating getCoalescedEvents()
+// so speed is computed from the device's own per-sample timing rather than
+// the (much coarser) time between dispatched pointermove events.
+function inkAddPoint(pt, pressure, t) {
     if (!inkDraw) return;
+    const now = t ?? performance.now();
+
+    // Speed + direction are derived from the *raw* incoming point, not the
+    // stabilized centerline below — they're modeling how fast/which-way the
+    // hand is actually moving, a separate concern from smoothing the drawn
+    // line's shape. Direction is EMA'd as a unit vector (not as an angle,
+    // which would need awkward wraparound handling at +-180 deg) so the
+    // fountain nib's calligraphic edge stays smooth instead of flickering
+    // between samples.
+    const last = inkDraw.lastRaw;
+    const dx = pt.x - last.x, dy = pt.y - last.y;
+    const dist = Math.hypot(dx, dy);
+    const dt = Math.max(1, now - last.t);
+    const instSpeed = dist / dt; // px/ms
+    inkDraw.speed = inkDraw.speed * 0.7 + instSpeed * 0.3;
+    if (dist > 0.02) {
+        const ux = dx / dist, uy = dy / dist;
+        let ndx = inkDraw.dirX * 0.75 + ux * 0.25;
+        let ndy = inkDraw.dirY * 0.75 + uy * 0.25;
+        const dlen = Math.hypot(ndx, ndy) || 1;
+        inkDraw.dirX = ndx / dlen; inkDraw.dirY = ndy / dlen;
+    }
+    inkDraw.lastRaw = { x: pt.x, y: pt.y, t: now };
+
     const alpha = inkStabilizationAlpha(inkDraw.settings.stabilization);
     inkDraw.smoothed = {
         x: inkDraw.smoothed.x + (pt.x - inkDraw.smoothed.x) * alpha,
         y: inkDraw.smoothed.y + (pt.y - inkDraw.smoothed.y) * alpha,
     };
-    inkDraw.points.push({ x: inkDraw.smoothed.x, y: inkDraw.smoothed.y, pressure });
+    inkDraw.points.push({
+        x: inkDraw.smoothed.x, y: inkDraw.smoothed.y, pressure,
+        speed: inkDraw.speed, dirX: inkDraw.dirX, dirY: inkDraw.dirY,
+    });
     renderInkPreview();
 }
 
@@ -2034,6 +2095,9 @@ function renderInkPreview() {
     path.setAttribute("fill", inkDraw.settings.color || "#1a1a2e");
     if (inkDraw.penType === "highlighter") {
         path.setAttribute("fill-opacity", "0.35");
+        path.style.mixBlendMode = "multiply";
+    } else if (inkDraw.penType === "fountain") {
+        path.setAttribute("fill-opacity", "0.94");
         path.style.mixBlendMode = "multiply";
     }
     el.appendChild(path);
@@ -2062,13 +2126,14 @@ function finishInkStroke() {
     obj.fill = { type: "solid", color: inkDraw.settings.color || "#1a1a2e" };
     obj.stroke = { color: "none", width: 0, dash: "solid" };
     obj.penType = inkDraw.penType;
-    obj.points = pts.map(p => ({ x: nx(p.x), y: ny(p.y), pressure: p.pressure }));
+    obj.points = pts.map(p => ({ x: nx(p.x), y: ny(p.y), pressure: p.pressure, speed: p.speed, dirX: p.dirX, dirY: p.dirY }));
     obj.thicknessMm = inkDraw.settings.thicknessMm;
     obj.stabilization = inkDraw.settings.stabilization;
     if (inkDraw.penType === "fountain") {
         obj.tipSharpness = inkDraw.settings.tipSharpness;
         obj.pressureSensitivity = inkDraw.settings.pressureSensitivity;
         obj.tipFlatness = inkDraw.settings.tipFlatness;
+        obj.velocitySensitivity = inkDraw.settings.velocitySensitivity;
     } else if (inkDraw.penType === "brush") {
         obj.pressureSensitivity = inkDraw.settings.pressureSensitivity;
     } else if (inkDraw.penType === "highlighter") {
@@ -2158,6 +2223,8 @@ function seedInkSliders(penType) {
         document.getElementById("inkFountainPressureVal").textContent = s.pressureSensitivity;
         document.getElementById("inkTipFlatnessSlider").value = s.tipFlatness;
         document.getElementById("inkTipFlatnessVal").textContent = s.tipFlatness;
+        document.getElementById("inkFountainVelocitySlider").value = s.velocitySensitivity;
+        document.getElementById("inkFountainVelocityVal").textContent = s.velocitySensitivity;
     } else if (penType === "brush") {
         document.getElementById("inkBrushPressureSlider").value = s.pressureSensitivity;
         document.getElementById("inkBrushPressureVal").textContent = s.pressureSensitivity;
@@ -2213,6 +2280,10 @@ document.getElementById("inkFountainPressureSlider").addEventListener("input", (
 document.getElementById("inkTipFlatnessSlider").addEventListener("input", (e) => {
     curInkSettings().tipFlatness = parseFloat(e.target.value);
     document.getElementById("inkTipFlatnessVal").textContent = e.target.value;
+});
+document.getElementById("inkFountainVelocitySlider").addEventListener("input", (e) => {
+    curInkSettings().velocitySensitivity = parseFloat(e.target.value);
+    document.getElementById("inkFountainVelocityVal").textContent = e.target.value;
 });
 document.getElementById("inkBrushPressureSlider").addEventListener("input", (e) => {
     curInkSettings().pressureSensitivity = parseFloat(e.target.value);
@@ -3305,11 +3376,18 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             shape = document.createElementNS(svgNS, "path");
             const ax = v => obj.x + v * obj.w, ay = v => obj.y + v * obj.h;
             const basePx = (obj.thicknessMm ?? 0.5) * PX_PER_MM;
-            const pts = (obj.points || []).map(p => ({ x: ax(p.x), y: ay(p.y), pressure: p.pressure }));
+            const pts = (obj.points || []).map(p => ({ x: ax(p.x), y: ay(p.y), pressure: p.pressure, speed: p.speed, dirX: p.dirX, dirY: p.dirY }));
             const widthFn = INK_WIDTH_FNS[obj.penType] || widthForBallpoint;
             const d = buildInkOutlinePath(pts, (i, pt, ptsArr) => widthFn(i, pt, ptsArr, basePx, obj), INK_CAP_STYLES[obj.penType] || "round");
             applyAttrs(shape, { d, fill, "fill-rule": "nonzero", ...sAttrs });
             if (obj.penType === "highlighter") shape.style.mixBlendMode = "multiply";
+            // Fountain: a hair below fully opaque + multiply so ink looks
+            // subtly deeper wherever the nib re-traces/crosses itself —
+            // real wet ink layering — without visibly dimming a single pass.
+            if (obj.penType === "fountain") {
+                applyAttrs(shape, { "fill-opacity": "0.94" });
+                shape.style.mixBlendMode = "multiply";
+            }
 
             // Pencil: graphite-grain texture — break the fill's edge/interior
             // up with turbulence-derived alpha so it doesn't read as a flat
@@ -9121,7 +9199,17 @@ window.addEventListener("pointermove", (e) => {
     // it (touch can't ever be in this state since pointerdown rejected it).
     if (inkDraw) {
         if (e.pointerType === "touch") return;
-        inkAddPoint(svgPoint(e), e.pressure || 0.5);
+        // A stylus/mouse typically samples at a higher rate than the
+        // browser dispatches pointermove — getCoalescedEvents() exposes
+        // those in-between samples instead of letting the browser collapse
+        // them into one, which is most of what makes a fast stroke's
+        // curve/width look chunky rather than fluid. Falls back to the
+        // single event on browsers/devices without coalescing support.
+        const samples = (typeof e.getCoalescedEvents === "function" && e.getCoalescedEvents().length)
+            ? e.getCoalescedEvents() : [e];
+        for (const ev of samples) {
+            inkAddPoint(svgPoint(ev), ev.pressure || 0.5, ev.timeStamp);
+        }
         return;
     }
 

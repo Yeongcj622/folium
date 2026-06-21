@@ -278,6 +278,11 @@
       <path d="M5.5 6.5 9 10l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
       <path d="M3 13.5c2-1.4 10-1.4 12 0" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
     </symbol>
+    <symbol id="fxi-velocity" viewBox="0 0 18 18">
+      <path d="M2 11.5l4-4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" opacity="0.4"/>
+      <path d="M5 13.5l5-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" opacity="0.7"/>
+      <path d="M8.5 15.5l6.5-6.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+    </symbol>
 
     <!-- ---------- Header action icons ---------- -->
     <symbol id="icon-undo" viewBox="0 0 24 24">
@@ -2434,18 +2439,23 @@
                     <div class="fxp-card-bd fxp-2col">
                         <div class="fxp-row">
                             <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Tip Sharpness"><use href="#fxi-tip-sharpness"/></svg>
-                            <input type="range" class="fxp-range fxp-range-sm" id="inkTipSharpnessSlider" min="0" max="100" step="1" value="50">
-                            <span class="fxp-val" id="inkTipSharpnessVal">50</span>
+                            <input type="range" class="fxp-range fxp-range-sm" id="inkTipSharpnessSlider" min="0" max="100" step="1" value="85">
+                            <span class="fxp-val" id="inkTipSharpnessVal">85</span>
                         </div>
                         <div class="fxp-row">
                             <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Tip Flatness"><use href="#fxi-tip-flatness"/></svg>
-                            <input type="range" class="fxp-range fxp-range-sm" id="inkTipFlatnessSlider" min="0" max="100" step="1" value="45">
-                            <span class="fxp-val" id="inkTipFlatnessVal">45</span>
+                            <input type="range" class="fxp-range fxp-range-sm" id="inkTipFlatnessSlider" min="0" max="100" step="1" value="0">
+                            <span class="fxp-val" id="inkTipFlatnessVal">0</span>
                         </div>
                         <div class="fxp-row">
                             <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Pressure Sensitivity"><use href="#fxi-pressure"/></svg>
-                            <input type="range" class="fxp-range fxp-range-sm" id="inkFountainPressureSlider" min="0" max="100" step="1" value="70">
-                            <span class="fxp-val" id="inkFountainPressureVal">70</span>
+                            <input type="range" class="fxp-range fxp-range-sm" id="inkFountainPressureSlider" min="0" max="100" step="1" value="85">
+                            <span class="fxp-val" id="inkFountainPressureVal">85</span>
+                        </div>
+                        <div class="fxp-row">
+                            <svg class="fxp-ico" viewBox="0 0 18 18" width="13" height="13" title="Ink Flow (speed sensitivity)"><use href="#fxi-velocity"/></svg>
+                            <input type="range" class="fxp-range fxp-range-sm" id="inkFountainVelocitySlider" min="0" max="100" step="1" value="55">
+                            <span class="fxp-val" id="inkFountainVelocityVal">55</span>
                         </div>
                     </div>
                 </div>
