@@ -22,6 +22,20 @@ const TEXT_CAPABLE_SHAPES = ["rect", "roundrect", "ellipse", "triangle", "equilT
     "parallelogram", "trapezoid", "octagon", "cross", "rightArrow", "leftArrow", "upArrow", "downArrow", "cylinder",
     "doubleArrow", "chevron", "lightningBolt", "donut", "pie", "blockArc", "moon", "cloud", "noSymbol",
     "starburst", "snipRect", "pentagonArrow", "funnel", "gear", "frameRect", "wave", "semicircle", "ovalCallout", "thoughtBubble", "badgeCircle"];
+
+// "Impact" ships as an actual font file only on Windows, so PowerPoint
+// (almost always run on Windows) renders true Impact while this web app
+// falls back to the browser's generic bold sans-serif on every other OS,
+// looking noticeably thinner/lighter than real Impact. Haettenschweiler is
+// the other Windows-bundled near-match; Anton is a Google Font designed
+// specifically as a free Impact lookalike, so it's a much closer fallback
+// than a plain sans-serif on systems without the real font.
+const FONT_FALLBACK_CHAINS = {
+    "Impact": `"Impact", Haettenschweiler, "Anton", sans-serif`,
+};
+function fontFamilyCss(fontFamily) {
+    return FONT_FALLBACK_CHAINS[fontFamily] || `"${fontFamily}", sans-serif`;
+}
 // Polygon-based shapes whose outline is a simple list of points
 const POLYGON_SHAPES = ["parallelogram", "trapezoid", "octagon", "cross", "rightArrow", "leftArrow", "upArrow", "downArrow"];
 const TEXT_CAPABLE_TYPES = ["text", ...TEXT_CAPABLE_SHAPES];
@@ -81,6 +95,7 @@ function makeSlide() {
 
 let state = {
     slides: [ makeSlide() ],
+    sections: [], // { id, name, collapsed } — slides opt in via slide.sectionId
     current: 0,
     selection: [],   // array of object ids
     cellSelections: [], // ids of selected table cell rects (for fill/border editing)
@@ -383,7 +398,7 @@ const LANGUAGES = [
 var appLanguage = localStorage.getItem("folium_lang") || "en";
 
 function snapshotState() {
-    return JSON.stringify({ slides: state.slides, current: state.current, slideW: SLIDE_W, slideH: SLIDE_H,
+    return JSON.stringify({ slides: state.slides, sections: state.sections, current: state.current, slideW: SLIDE_W, slideH: SLIDE_H,
         headerText: state.headerText, footerText: state.footerText });
 }
 
@@ -408,7 +423,7 @@ function undo() {
     if (!historyStack.length) return;
     redoStack.push(snapshotState());
     const prev = JSON.parse(historyStack.pop());
-    state.slides = prev.slides; state.current = prev.current; state.selection = [];
+    state.slides = prev.slides; state.sections = prev.sections || []; state.current = prev.current; state.selection = [];
     SLIDE_W = prev.slideW || SLIDE_W; SLIDE_H = prev.slideH || SLIDE_H;
     state.slideW = SLIDE_W; state.slideH = SLIDE_H;
     state.headerText = prev.headerText; state.footerText = prev.footerText;
@@ -421,7 +436,7 @@ function redo() {
     if (!redoStack.length) return;
     historyStack.push(snapshotState());
     const next = JSON.parse(redoStack.pop());
-    state.slides = next.slides; state.current = next.current; state.selection = [];
+    state.slides = next.slides; state.sections = next.sections || []; state.current = next.current; state.selection = [];
     SLIDE_W = next.slideW || SLIDE_W; SLIDE_H = next.slideH || SLIDE_H;
     state.slideW = SLIDE_W; state.slideH = SLIDE_H;
     state.headerText = next.headerText; state.footerText = next.footerText;
@@ -795,11 +810,24 @@ function applyZoom() {
 
 window.addEventListener("resize", applyZoom);
 
+// The same object's fill/stroke gets rendered into several SVGs that can all
+// exist in the DOM at once (the live canvas, the slides-panel thumbnails,
+// PDF/print export, gradient-bar previews, ...) — resolveColor/resolveFill's
+// def ids were derived only from obj.id, so the *same* id ended up on
+// multiple <pattern>/<linearGradient>/<filter> elements simultaneously.
+// IDs must be document-unique; Chrome's print/PDF rasterizer in particular
+// silently drops fills whose def id collides like this. Suffixing every
+// generated id with a fresh sequence number guarantees uniqueness regardless
+// of which of those contexts is calling in.
+let _uidSeq = 0;
+function uniqueDomId(base) { return base + "-u" + (_uidSeq++); }
+
 // shared by fill and stroke: builds a gradient def (if needed) and returns
 // the value to use for a fill/stroke attribute (a color string or url(#id))
 function resolveColor(f, id, defs) {
     if (!f || f.type === "solid" || !f.type) return f ? f.color : "none";
     if (f.type === "gradient") {
+        id = uniqueDomId(id);
         const tag = f.gradientType === "radial" ? "radialGradient" : "linearGradient";
         const grad = document.createElementNS(svgNS, tag);
         grad.setAttribute("id", id);
@@ -834,23 +862,37 @@ function solidColorOf(s) {
 function resolveFill(obj, defs) {
     const f = obj.fill;
     if (!f || f.type === "solid" || f.type === "gradient") return resolveColor(f, "fill-" + obj.id, defs);
-    const id = "fill-" + obj.id;
+    const id = uniqueDomId("fill-" + obj.id);
     if (f.type === "parchment") {
-        // turbulence filter for paper texture
-        const filterId = "parch-filter-" + obj.id;
+        // Two-layer noise for a rougher, more aged-paper look: fine fiber
+        // grain (high frequency, sharp contrast) over larger blotch/stain
+        // mottling (low frequency), composited via feMerge.
+        const filterId = uniqueDomId("parch-filter-" + obj.id);
         const filter = document.createElementNS(svgNS, "filter");
         filter.setAttribute("id", filterId);
-        const turb = document.createElementNS(svgNS, "feTurbulence");
-        turb.setAttribute("type", "fractalNoise");
-        turb.setAttribute("baseFrequency", "0.04 0.06");
-        turb.setAttribute("numOctaves", "3");
-        turb.setAttribute("result", "noise");
-        const comp = document.createElementNS(svgNS, "feColorMatrix");
-        comp.setAttribute("in", "noise");
-        comp.setAttribute("type", "matrix");
-        comp.setAttribute("values", "0 0 0 0 0.7  0 0 0 0 0.62  0 0 0 0 0.45  0 0 0 0.35 0");
-        filter.appendChild(turb);
-        filter.appendChild(comp);
+        filter.setAttribute("x", "-10%"); filter.setAttribute("y", "-10%");
+        filter.setAttribute("width", "120%"); filter.setAttribute("height", "120%");
+
+        const fiberTurb = document.createElementNS(svgNS, "feTurbulence");
+        applyAttrs(fiberTurb, { type: "fractalNoise", baseFrequency: "120 90", numOctaves: 2, seed: 2, result: "fiberNoise" });
+        const fiberMatrix = document.createElementNS(svgNS, "feColorMatrix");
+        applyAttrs(fiberMatrix, { in: "fiberNoise", type: "matrix", values: "0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.75 0 0 0 -0.275", result: "fiberAlpha" });
+        const fiberTint = document.createElementNS(svgNS, "feColorMatrix");
+        applyAttrs(fiberTint, { in: "fiberAlpha", type: "matrix", values: "0 0 0 0 0.32  0 0 0 0 0.25  0 0 0 0 0.12  0 0 0 1 0", result: "fiberColor" });
+
+        const blotchTurb = document.createElementNS(svgNS, "feTurbulence");
+        applyAttrs(blotchTurb, { type: "fractalNoise", baseFrequency: "5 6", numOctaves: 2, seed: 9, result: "blotchNoise" });
+        const blotchMatrix = document.createElementNS(svgNS, "feColorMatrix");
+        applyAttrs(blotchMatrix, { in: "blotchNoise", type: "matrix", values: "0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.6 0 0 0 -0.22", result: "blotchAlpha" });
+        const blotchTint = document.createElementNS(svgNS, "feColorMatrix");
+        applyAttrs(blotchTint, { in: "blotchAlpha", type: "matrix", values: "0 0 0 0 0.42  0 0 0 0 0.32  0 0 0 0 0.16  0 0 0 0.8 0", result: "blotchColor" });
+
+        const merge = document.createElementNS(svgNS, "feMerge");
+        const mn1 = document.createElementNS(svgNS, "feMergeNode"); mn1.setAttribute("in", "blotchColor");
+        const mn2 = document.createElementNS(svgNS, "feMergeNode"); mn2.setAttribute("in", "fiberColor");
+        merge.append(mn1, mn2);
+
+        filter.append(fiberTurb, fiberMatrix, fiberTint, blotchTurb, blotchMatrix, blotchTint, merge);
         defs.appendChild(filter);
 
         const pat = document.createElementNS(svgNS, "pattern");
@@ -887,6 +929,85 @@ function resolveFill(obj, defs) {
         txt.setAttribute("dominant-baseline", "central");
         txt.textContent = f.emoji || "⭐";
         pat.appendChild(txt);
+        defs.appendChild(pat);
+        return `url(#${id})`;
+    }
+    if (f.type === "grid") {
+        const size = f.gridSize || 20;
+        const lineW = f.lineWidth || 1;
+        const pat = document.createElementNS(svgNS, "pattern");
+        pat.setAttribute("id", id);
+        pat.setAttribute("width", size);
+        pat.setAttribute("height", size);
+        pat.setAttribute("patternUnits", "userSpaceOnUse");
+        const bgRect = document.createElementNS(svgNS, "rect");
+        bgRect.setAttribute("width", size); bgRect.setAttribute("height", size);
+        bgRect.setAttribute("fill", f.bgColor || "#ffffff");
+        pat.appendChild(bgRect);
+        // one line per edge (not a stroked rect outline), so shared edges
+        // between adjacent tiles aren't drawn twice as a thicker line
+        const hLine = document.createElementNS(svgNS, "line");
+        applyAttrs(hLine, { x1: 0, y1: 0, x2: size, y2: 0, stroke: f.lineColor || "#cccccc", "stroke-width": lineW });
+        pat.appendChild(hLine);
+        const vLine = document.createElementNS(svgNS, "line");
+        applyAttrs(vLine, { x1: 0, y1: 0, x2: 0, y2: size, stroke: f.lineColor || "#cccccc", "stroke-width": lineW });
+        pat.appendChild(vLine);
+        defs.appendChild(pat);
+        return `url(#${id})`;
+    }
+    if (f.type === "dots") {
+        const spacing = f.dotSpacing || 20;
+        const dotR = (f.dotSize ?? 3) / 2;
+        const pat = document.createElementNS(svgNS, "pattern");
+        pat.setAttribute("id", id);
+        pat.setAttribute("width", spacing);
+        pat.setAttribute("height", spacing);
+        pat.setAttribute("patternUnits", "userSpaceOnUse");
+        const bgRect = document.createElementNS(svgNS, "rect");
+        bgRect.setAttribute("width", spacing); bgRect.setAttribute("height", spacing);
+        bgRect.setAttribute("fill", f.bgColor || "#ffffff");
+        pat.appendChild(bgRect);
+        const dot = document.createElementNS(svgNS, "circle");
+        applyAttrs(dot, { cx: spacing / 2, cy: spacing / 2, r: dotR, fill: f.dotColor || "#999999" });
+        pat.appendChild(dot);
+        defs.appendChild(pat);
+        return `url(#${id})`;
+    }
+    if (f.type === "fabric") {
+        // Small repeating tile: two crossing thread lines (the weave) plus
+        // fine grain noise at the same tile scale, so it repeats seamlessly
+        // instead of needing to span the whole shape like parchment's noise.
+        const size = f.weaveSize || 6;
+        const filterId = uniqueDomId("fabric-filter-" + obj.id);
+        const filter = document.createElementNS(svgNS, "filter");
+        filter.setAttribute("id", filterId);
+        filter.setAttribute("x", "0%"); filter.setAttribute("y", "0%");
+        filter.setAttribute("width", "100%"); filter.setAttribute("height", "100%");
+        const turb = document.createElementNS(svgNS, "feTurbulence");
+        applyAttrs(turb, { type: "fractalNoise", baseFrequency: 0.9, numOctaves: 2, seed: 4, stitchTiles: "stitch", result: "grain" });
+        const cm = document.createElementNS(svgNS, "feColorMatrix");
+        applyAttrs(cm, { in: "grain", type: "matrix", values: "0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0.7 0 0 0 -0.25", result: "grainAlpha" });
+        filter.append(turb, cm);
+        defs.appendChild(filter);
+
+        const pat = document.createElementNS(svgNS, "pattern");
+        pat.setAttribute("id", id);
+        pat.setAttribute("width", size);
+        pat.setAttribute("height", size);
+        pat.setAttribute("patternUnits", "userSpaceOnUse");
+        const bgRect = document.createElementNS(svgNS, "rect");
+        applyAttrs(bgRect, { width: size, height: size, fill: f.bgColor || "#eadfcd" });
+        pat.appendChild(bgRect);
+        const grainRect = document.createElementNS(svgNS, "rect");
+        applyAttrs(grainRect, { width: size, height: size, fill: "#3a2f22", filter: `url(#${filterId})` });
+        pat.appendChild(grainRect);
+        const threadW = Math.max(0.6, size * 0.16);
+        const hLine = document.createElementNS(svgNS, "line");
+        applyAttrs(hLine, { x1: 0, y1: size * 0.28, x2: size, y2: size * 0.28, stroke: f.threadColor || "#ffffff", "stroke-opacity": 0.4, "stroke-width": threadW });
+        pat.appendChild(hLine);
+        const vLine = document.createElementNS(svgNS, "line");
+        applyAttrs(vLine, { x1: size * 0.72, y1: 0, x2: size * 0.72, y2: size, stroke: f.threadColor || "#ffffff", "stroke-opacity": 0.4, "stroke-width": threadW });
+        pat.appendChild(vLine);
         defs.appendChild(pat);
         return `url(#${id})`;
     }
@@ -1023,6 +1144,272 @@ const EDIT_POINTS_SHAPE_TYPES = [
     "starburst", "snipRect", "pentagonArrow", "funnel"
 ];
 
+// ============ Extra shapes ============
+// A second, larger batch of shapes added via ONE shared point-generator
+// table instead of a hand-written `case` in each of getShapePoints(),
+// renderObject(), and objectToTikz() per shape (40 shapes x 3+ places would
+// otherwise mean 120+ near-identical edits). Each entry is a function
+// (x, y, w, h, cx, cy) => [[x,y], ...] — the exact same convention
+// getShapePoints() already uses. The three call sites below each have a
+// single generic hook that consults this table for any obj.type they don't
+// already handle explicitly, so adding a 41st shape later only means adding
+// one entry here.
+function regularPolygonPts(cx, cy, w, h, n, rot = -Math.PI / 2) {
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+        const ang = (2 * Math.PI / n) * i + rot;
+        pts.push([cx + (w / 2) * Math.cos(ang), cy + (h / 2) * Math.sin(ang)]);
+    }
+    return pts;
+}
+function starPts(cx, cy, w, h, n, innerRatio, rot = -Math.PI / 2) {
+    const pts = [];
+    for (let i = 0; i < n * 2; i++) {
+        const ang = (Math.PI / n) * i + rot;
+        const r = i % 2 === 0 ? 1 : innerRatio;
+        pts.push([cx + (w / 2) * r * Math.cos(ang), cy + (h / 2) * r * Math.sin(ang)]);
+    }
+    return pts;
+}
+// samples n+1 points along an elliptical arc from startAng to endAng (in
+// radians; can sweep in either direction since it's a plain lerp)
+function arcPts(cx, cy, rx, ry, startAng, endAng, n = 16) {
+    const pts = [];
+    for (let i = 0; i <= n; i++) {
+        const ang = startAng + (endAng - startAng) * (i / n);
+        pts.push([cx + rx * Math.cos(ang), cy + ry * Math.sin(ang)]);
+    }
+    return pts;
+}
+
+const EXTRA_SHAPE_DEFS = {
+    // ---- More Polygons & Stars ----
+    nonagon: (x, y, w, h, cx, cy) => regularPolygonPts(cx, cy, w, h, 9),
+    hendecagon: (x, y, w, h, cx, cy) => regularPolygonPts(cx, cy, w, h, 11),
+    star6: (x, y, w, h, cx, cy) => starPts(cx, cy, w, h, 6, 0.55),
+    star8: (x, y, w, h, cx, cy) => starPts(cx, cy, w, h, 8, 0.6),
+    star12: (x, y, w, h, cx, cy) => starPts(cx, cy, w, h, 12, 0.65),
+    star24: (x, y, w, h, cx, cy) => starPts(cx, cy, w, h, 24, 0.88),
+    plusSign: (x, y, w, h) => {
+        const tx = w * 0.28, ty = h * 0.28;
+        return [[x + tx, y], [x + w - tx, y], [x + w - tx, y + ty], [x + w, y + ty], [x + w, y + h - ty], [x + w - tx, y + h - ty],
+                [x + w - tx, y + h], [x + tx, y + h], [x + tx, y + h - ty], [x, y + h - ty], [x, y + ty], [x + tx, y + ty]];
+    },
+    lShape: (x, y, w, h) => {
+        const a = w * 0.4, b = h * 0.4;
+        return [[x, y], [x + a, y], [x + a, y + h - b], [x + w, y + h - b], [x + w, y + h], [x, y + h]];
+    },
+    tShape: (x, y, w, h) => {
+        const topH = h * 0.35, stemW = w * 0.34, sx = x + (w - stemW) / 2;
+        return [[x, y], [x + w, y], [x + w, y + topH], [sx + stemW, y + topH], [sx + stemW, y + h], [sx, y + h], [sx, y + topH], [x, y + topH]];
+    },
+    chord: (x, y, w, h, cx, cy) => {
+        const ang0 = Math.asin(2 * 0.28 - 1);
+        return arcPts(cx, cy, w / 2, h / 2, ang0, Math.PI - ang0, 20);
+    },
+
+    // ---- More Arrows ----
+    upDownArrow: (x, y, w, h) => {
+        const headH = h * 0.2, bodyW = w * 0.5, bodyX = x + (w - bodyW) / 2;
+        return [[x + w / 2, y], [x + w, y + headH], [bodyX + bodyW, y + headH], [bodyX + bodyW, y + h - headH], [x + w, y + h - headH], [x + w / 2, y + h],
+                [x, y + h - headH], [bodyX, y + h - headH], [bodyX, y + headH], [x, y + headH]];
+    },
+    quadArrow: (x, y, w, h, cx, cy) => {
+        const armW = Math.min(w, h) * 0.28, headLen = Math.min(w, h) * 0.18;
+        return [
+            [cx, y], [cx + armW, y + headLen], [cx + armW / 2, y + headLen],
+            [cx + armW / 2, cy - armW / 2], [x + w - headLen, cy - armW / 2], [x + w - headLen, cy - armW],
+            [x + w, cy], [x + w - headLen, cy + armW], [x + w - headLen, cy + armW / 2],
+            [cx + armW / 2, cy + armW / 2], [cx + armW / 2, y + h - headLen], [cx + armW, y + h - headLen],
+            [cx, y + h], [cx - armW, y + h - headLen], [cx - armW / 2, y + h - headLen],
+            [cx - armW / 2, cy + armW / 2], [x + headLen, cy + armW / 2], [x + headLen, cy + armW],
+            [x, cy], [x + headLen, cy - armW], [x + headLen, cy - armW / 2],
+            [cx - armW / 2, cy - armW / 2], [cx - armW / 2, y + headLen], [cx - armW, y + headLen],
+        ];
+    },
+    bentArrow: (x, y, w, h) => {
+        const aw = Math.min(w, h) * 0.3, headW = aw * 2, headH = h * 0.3, vcx = x + w - aw / 2;
+        return [
+            [x, y + h], [x, y + h - aw], [vcx - aw / 2, y + h - aw], [vcx - aw / 2, y + headH],
+            [vcx - headW / 2, y + headH], [vcx, y], [vcx + headW / 2, y + headH],
+            [vcx + aw / 2, y + headH], [vcx + aw / 2, y + h],
+        ];
+    },
+    uturnArrow: (x, y, w, h) => {
+        const outerR = w / 2, innerR = outerR * 0.5, legW = outerR - innerR, archCy = y + outerR;
+        return [
+            [x, y + h], [x, archCy], ...arcPts(x + outerR, archCy, outerR, outerR, Math.PI, 2 * Math.PI, 16),
+            [x + w, y + h], [x + w - legW, y + h], [x + w - legW, archCy],
+            ...arcPts(x + outerR, archCy, innerR, innerR, 2 * Math.PI, Math.PI, 16),
+            [x + legW, archCy], [x + legW, y + h],
+        ];
+    },
+    notchedRightArrow: (x, y, w, h) => {
+        const headW = w * 0.35, bodyH = h * 0.5, bodyY = y + (h - bodyH) / 2, notch = w * 0.08;
+        return [
+            [x + notch, bodyY], [x + w - headW, bodyY], [x + w - headW, y], [x + w, y + h / 2],
+            [x + w - headW, y + h], [x + w - headW, bodyY + bodyH], [x + notch, bodyY + bodyH], [x, y + h / 2],
+        ];
+    },
+    curvedRightArrow: (x, y, w, h, cx, cy) => {
+        const outerR = Math.min(w, h) / 2, innerR = outerR * 0.55;
+        const a0 = 0, a1 = Math.PI / 2;
+        const headTip = [cx + outerR * 1.35 * Math.cos(a0 - 0.3), cy + outerR * 1.35 * Math.sin(a0 - 0.3)];
+        return [headTip, ...arcPts(cx, cy, outerR, outerR, a0, a1, 16), ...arcPts(cx, cy, innerR, innerR, a1, a0, 16)];
+    },
+    circularArrow: (x, y, w, h, cx, cy) => {
+        const outerR = Math.min(w, h) / 2, innerR = outerR * 0.62, a0 = Math.PI * 0.1, a1 = Math.PI * 1.85;
+        const headTip = [cx + outerR * 1.25 * Math.cos(a0 - 0.25), cy + outerR * 1.25 * Math.sin(a0 - 0.25)];
+        return [headTip, ...arcPts(cx, cy, outerR, outerR, a0, a1, 24), ...arcPts(cx, cy, innerR, innerR, a1, a0, 24)];
+    },
+    swooshArrow: (x, y, w, h) => {
+        const t = h * 0.22;
+        return [[x, y + h * 0.5 - t / 2], [x + w * 0.35, y + h - t / 2], [x + w * 0.35, y + h * 0.3], [x + w, y],
+                [x + w, y + t], [x + w * 0.4, y + h], [x, y + h * 0.5 + t / 2]];
+    },
+
+    // ---- Flowchart ----
+    flowchartTerminator: (x, y, w, h, cx, cy) => {
+        const r = h / 2;
+        return [...arcPts(x + w - r, cy, r, r, -Math.PI / 2, Math.PI / 2, 12), ...arcPts(x + r, cy, r, r, Math.PI / 2, Math.PI * 1.5, 12)];
+    },
+    flowchartManualInput: (x, y, w, h) => { const slant = h * 0.25; return [[x, y + slant], [x + w, y], [x + w, y + h], [x, y + h]]; },
+    flowchartManualOperation: (x, y, w, h) => { const o = w * 0.18; return [[x, y], [x + w, y], [x + w - o, y + h], [x + o, y + h]]; },
+    flowchartDisplay: (x, y, w, h, cx, cy) => [
+        ...arcPts(x + h * 0.3, cy, h * 0.3, h / 2, Math.PI / 2, Math.PI * 1.5, 10),
+        [x + w * 0.75, y], [x + w, cy], [x + w * 0.75, y + h],
+    ],
+    flowchartOffPageConnector: (x, y, w, h) => [[x, y], [x + w, y], [x + w, y + h * 0.6], [x + w / 2, y + h], [x, y + h * 0.6]],
+    flowchartStoredData: (x, y, w, h, cx, cy) => {
+        const bow = w * 0.12;
+        return [[x + bow, y], [x + w, y], [x + w, y + h], [x + bow, y + h], ...arcPts(x + bow, cy, bow, h / 2, Math.PI / 2, Math.PI * 1.5, 10)];
+    },
+    flowchartCard: (x, y, w, h) => { const c = Math.min(w, h) * 0.2; return [[x + c, y], [x + w, y], [x + w, y + h], [x, y + h], [x, y + c]]; },
+    flowchartDelay: (x, y, w, h, cx, cy) => [[x, y], [x + w * 0.6, y], ...arcPts(x + w * 0.6, cy, w * 0.4, h / 2, -Math.PI / 2, Math.PI / 2, 12), [x, y + h]],
+    flowchartDocument: (x, y, w, h) => {
+        const waveH = h * 0.08;
+        return [[x, y], [x + w, y], [x + w, y + h - waveH], [x + w * 0.75, y + h + waveH], [x + w * 0.5, y + h - waveH], [x + w * 0.25, y + h + waveH], [x, y + h - waveH]];
+    },
+
+    // ---- Banners & Scrolls ----
+    ribbonBannerUp: (x, y, w, h) => {
+        const foldH = h * 0.25, notchW = w * 0.08;
+        return [
+            [x, y + foldH], [x + notchW, y], [x + notchW, y + foldH * 0.6], [x + w - notchW, y + foldH * 0.6], [x + w - notchW, y], [x + w, y + foldH],
+            [x + w, y + h], [x + w - notchW * 1.5, y + h - foldH * 0.4], [x + notchW * 1.5, y + h - foldH * 0.4], [x, y + h],
+        ];
+    },
+    ribbonBannerDown: (x, y, w, h) => {
+        const foldH = h * 0.25, notchW = w * 0.08;
+        return [
+            [x, y], [x + notchW * 1.5, y + foldH * 0.4], [x + w - notchW * 1.5, y + foldH * 0.4], [x + w, y],
+            [x + w, y + h - foldH], [x + w - notchW, y + h], [x + w - notchW, y + h - foldH * 0.6], [x + notchW, y + h - foldH * 0.6], [x + notchW, y + h], [x, y + h - foldH],
+        ];
+    },
+    waveBanner: (x, y, w, h) => {
+        const wv = h * 0.12;
+        return [
+            [x, y + wv], [x + w * 0.25, y - wv], [x + w * 0.5, y + wv], [x + w * 0.75, y - wv], [x + w, y + wv],
+            [x + w, y + h - wv], [x + w * 0.75, y + h + wv], [x + w * 0.5, y + h - wv], [x + w * 0.25, y + h + wv], [x, y + h - wv],
+        ];
+    },
+    doubleWave: (x, y, w, h) => {
+        const wv = h * 0.15;
+        return [[x, y + wv], [x + w / 3, y - wv], [x + 2 * w / 3, y + wv], [x + w, y - wv],
+                [x + w, y + h - wv], [x + 2 * w / 3, y + h + wv], [x + w / 3, y + h - wv], [x, y + h + wv]];
+    },
+    verticalScroll: (x, y, w, h) => {
+        const r = w * 0.18;
+        return [
+            [x + r, y], [x + w - r, y], ...arcPts(x + w - r, y + r, r, r, -Math.PI / 2, Math.PI / 2, 8),
+            [x + w - r, y + h], [x + r, y + h], ...arcPts(x + r, y + h - r, r, r, Math.PI / 2, Math.PI * 1.5, 8),
+        ];
+    },
+    horizontalScroll: (x, y, w, h) => {
+        const r1 = h * 0.5, r2 = h * 0.12;
+        return [
+            [x + r1, y], [x + w - r2, y], ...arcPts(x + w - r2, y + h / 2, r2, h / 2, -Math.PI / 2, Math.PI / 2, 10),
+            [x + w - r2, y + h], [x + r1, y + h], ...arcPts(x + r1, y + h / 2, r1, h / 2, Math.PI / 2, Math.PI * 1.5, 10),
+        ];
+    },
+    plaque: (x, y, w, h) => {
+        const c = Math.min(w, h) * 0.15;
+        return [[x + c, y], [x + w - c, y], [x + w, y + c], [x + w, y + h - c], [x + w - c, y + h], [x + c, y + h], [x, y + h - c], [x, y + c]];
+    },
+
+    // ---- More Shapes ----
+    bevel: (x, y, w, h) => {
+        const c = Math.min(w, h) * 0.22;
+        return [[x + c, y], [x + w - c, y], [x + w, y + c], [x + w, y + h - c], [x + w - c, y + h], [x + c, y + h], [x, y + h - c], [x, y + c]];
+    },
+    teardrop: (x, y, w, h, cx, cy) => {
+        const r = Math.min(w, h) / 2;
+        return [[x + w, y], ...arcPts(cx - w * 0.1, cy, r * 0.9, r * 0.9, -Math.PI * 0.1, Math.PI * 1.6, 16)];
+    },
+    halfFrame: (x, y, w, h) => {
+        const t = Math.min(w, h) * 0.25;
+        return [[x, y], [x + w, y], [x + w, y + t], [x + t, y + t], [x + t, y + h], [x, y + h]];
+    },
+    leftTrapezoid: (x, y, w, h) => { const o = w * 0.25; return [[x + o, y], [x + w, y], [x + w, y + h], [x, y + h]]; },
+    rightTrapezoid: (x, y, w, h) => { const o = w * 0.25; return [[x, y], [x + w - o, y], [x + w, y + h], [x, y + h]]; },
+    rectCallout: (x, y, w, h) => {
+        const tailW = w * 0.15, tailH = h * 0.18;
+        return [
+            [x, y], [x + w, y], [x + w, y + h * 0.8], [x + w * 0.3 + tailW, y + h * 0.8], [x + w * 0.25, y + h * 0.8 + tailH], [x + w * 0.3, y + h * 0.8], [x, y + h * 0.8],
+        ];
+    },
+};
+const EXTRA_SHAPE_CATEGORIES = [
+    { title: "More Polygons & Stars", names: ["nonagon", "hendecagon", "star6", "star8", "star12", "star24", "plusSign", "lShape", "tShape", "chord"] },
+    { title: "More Arrows", names: ["upDownArrow", "quadArrow", "bentArrow", "uturnArrow", "notchedRightArrow", "curvedRightArrow", "circularArrow", "swooshArrow"] },
+    { title: "Flowchart", names: ["flowchartTerminator", "flowchartManualInput", "flowchartManualOperation", "flowchartDisplay", "flowchartOffPageConnector", "flowchartStoredData", "flowchartCard", "flowchartDelay", "flowchartDocument"] },
+    { title: "Banners & Scrolls", names: ["ribbonBannerUp", "ribbonBannerDown", "waveBanner", "doubleWave", "verticalScroll", "horizontalScroll", "plaque"] },
+    { title: "More Shapes", names: ["bevel", "teardrop", "halfFrame", "leftTrapezoid", "rightTrapezoid", "rectCallout"] },
+];
+const EXTRA_SHAPE_NAMES = Object.keys(EXTRA_SHAPE_DEFS);
+TEXT_CAPABLE_SHAPES.push(...EXTRA_SHAPE_NAMES);
+EDIT_POINTS_SHAPE_TYPES.push(...EXTRA_SHAPE_NAMES);
+
+// Builds the "More Shapes"-style sections in the shapes dropdown for every
+// EXTRA_SHAPE_DEFS entry, with each button's preview generated by calling
+// the shape's own point function — guarantees the icon always matches what
+// actually gets drawn, instead of hand-maintaining a duplicate SVG per shape.
+function populateExtraShapeButtons() {
+    const menu = document.getElementById("shapesDropdownMenu");
+    if (!menu) return;
+    EXTRA_SHAPE_CATEGORIES.forEach(cat => {
+        const section = document.createElement("div");
+        section.className = "shapes-section";
+        const title = document.createElement("div");
+        title.className = "shapes-section-title";
+        title.textContent = cat.title;
+        section.appendChild(title);
+        const row = document.createElement("div");
+        row.className = "shapes-grid-row";
+        cat.names.forEach(name => {
+            const btn = document.createElement("button");
+            btn.className = "tool-btn shape-grid-btn";
+            btn.dataset.tool = name;
+            btn.title = name.replace(/^flowchart/, "Flowchart: ").replace(/([a-z0-9])([A-Z])/g, "$1 $2").replace(/^./, c => c.toUpperCase());
+            const svg = document.createElementNS(svgNS, "svg");
+            svg.setAttribute("viewBox", "0 0 24 24");
+            const pts = EXTRA_SHAPE_DEFS[name](2, 2, 20, 20, 12, 12);
+            const poly = document.createElementNS(svgNS, "polygon");
+            poly.setAttribute("points", pts.map(p => p.join(",")).join(" "));
+            poly.setAttribute("fill", "none");
+            poly.setAttribute("stroke", "currentColor");
+            poly.setAttribute("stroke-width", "1.6");
+            poly.setAttribute("stroke-linejoin", "round");
+            svg.appendChild(poly);
+            btn.appendChild(svg);
+            row.appendChild(btn);
+        });
+        section.appendChild(row);
+        menu.appendChild(section);
+    });
+}
+populateExtraShapeButtons();
+
 // returns an array of [x,y] absolute points for a polygon-rendered shape,
 // honoring obj.customPoints (fractions of w/h) if the user has edited them
 function getShapePoints(obj) {
@@ -1136,6 +1523,7 @@ function getShapePoints(obj) {
         }
         default:
             pts = shapePolygonPoints(obj.type, x, y, w, h);
+            if (!pts && EXTRA_SHAPE_DEFS[obj.type]) pts = EXTRA_SHAPE_DEFS[obj.type](x, y, w, h, cx, cy);
     }
     if (!pts) return null;
     if (obj.customPoints && obj.customPoints.length === pts.length && w && h) {
@@ -2927,7 +3315,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             // up with turbulence-derived alpha so it doesn't read as a flat
             // vector shape.
             if (obj.penType === "pencil") {
-                const grainId = "ink-pencil-grain-" + obj.id;
+                const grainId = uniqueDomId("ink-pencil-grain-" + obj.id);
                 const grainFilt = document.createElementNS(svgNS, "filter");
                 grainFilt.setAttribute("id", grainId);
                 grainFilt.setAttribute("color-interpolation-filters", "sRGB");
@@ -2949,7 +3337,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             // Brush: a light blur for soft bristle edges instead of a crisp
             // vector outline.
             if (obj.penType === "brush") {
-                const blurId = "ink-brush-soft-" + obj.id;
+                const blurId = uniqueDomId("ink-brush-soft-" + obj.id);
                 const blurFilt = document.createElementNS(svgNS, "filter");
                 blurFilt.setAttribute("id", blurId);
                 blurFilt.setAttribute("x", "-20%"); blurFilt.setAttribute("y", "-20%");
@@ -3140,7 +3528,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             const { p1, p2 } = lineEndpoints(obj);
             applyAttrs(shape, { x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, ...sAttrs });
             if (obj.type === "arrow") {
-                const markerId = "arrow-" + obj.id;
+                const markerId = uniqueDomId("arrow-" + obj.id);
                 const marker = document.createElementNS(svgNS, "marker");
                 marker.setAttribute("id", markerId);
                 marker.setAttribute("markerWidth", "10");
@@ -3169,7 +3557,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             const _langEntry = LANGUAGES.find(l => l.code === appLanguage) || LANGUAGES[0];
             div.setAttribute("spellcheck", appLanguage === "en" ? "false" : "true");
             div.setAttribute("lang", _langEntry.bcp);
-            div.style.fontFamily = `"${obj.fontFamily}", sans-serif`;
+            div.style.fontFamily = fontFamilyCss(obj.fontFamily);
             div.style.fontSize = obj.fontSize + "px";
             div.style.color = obj.fontColor;
             div.style.fontWeight = obj.bold ? "bold" : "normal";
@@ -3256,7 +3644,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             // Real unsharp-mask sharpen via SVG feConvolveMatrix — stays outermost
             // (sharpening happens last in a real editing workflow, after tone/colour).
             if (obj.imgSharpen && obj.imgSharpen > 0) {
-                const shpId = "img-sharpen-" + obj.id;
+                const shpId = uniqueDomId("img-sharpen-" + obj.id);
                 const shpFilt = document.createElementNS(svgNS, "filter");
                 shpFilt.setAttribute("id", shpId);
                 shpFilt.setAttribute("color-interpolation-filters", "sRGB");
@@ -3275,7 +3663,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
 
             // Crop via clipPath
             if (obj.imgCrop && (obj.imgCrop.top || obj.imgCrop.right || obj.imgCrop.bottom || obj.imgCrop.left)) {
-                const cropId = "img-crop-" + obj.id;
+                const cropId = uniqueDomId("img-crop-" + obj.id);
                 const clip = document.createElementNS(svgNS, "clipPath");
                 clip.setAttribute("id", cropId);
                 const clipRect = document.createElementNS(svgNS, "rect");
@@ -3298,7 +3686,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             // Feather, matching Lightroom's vignette panel) instead of a
             // single fixed-shape darkening gradient.
             if (obj.imgVignette && obj.imgVignette > 0) {
-                const vigId = "img-vig-" + obj.id;
+                const vigId = uniqueDomId("img-vig-" + obj.id);
                 const amount = obj.imgVignette / 100 * 0.85;
                 const midpoint = obj.imgVignetteMidpoint ?? 50;   // 0-100: where the fade starts (lower = affects more)
                 const feather = obj.imgVignetteFeather ?? 50;     // 0-100: 0=hard edge, 100=very gradual
@@ -3349,7 +3737,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             // strongly the grain is blended in (previously it only nudged the
             // frequency — the overlay was always applied at full strength).
             if (obj.imgGrain && obj.imgGrain > 0) {
-                const grId = "img-grain-" + obj.id;
+                const grId = uniqueDomId("img-grain-" + obj.id);
                 const amount = Math.max(0, Math.min(1, obj.imgGrain / 100));
                 const size = (obj.imgGrainSize ?? 50) / 100;
                 const roughness = (obj.imgGrainRoughness ?? 50) / 100;
@@ -3525,13 +3913,18 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
             }
             break;
         }
+        default:
+            if (EXTRA_SHAPE_DEFS[obj.type]) {
+                shape = document.createElementNS(svgNS, "polygon");
+                applyAttrs(shape, { points: getShapePoints(obj).map(p => p.join(",")).join(" "), fill, ...sAttrs });
+            }
     }
     if (obj.opacity !== undefined && obj.opacity < 100) {
         g.setAttribute("opacity", (obj.opacity / 100).toFixed(2));
     }
     let filterTarget = g;
     if (obj.shadow || obj.glow || obj.innerShadow || obj.softEdge) {
-        const filterId = "fx-" + obj.id;
+        const filterId = uniqueDomId("fx-" + obj.id);
         const filter = document.createElementNS(svgNS, "filter");
         filter.setAttribute("id", filterId);
         const region = obj.shadow && obj.shadowPerspective ? 150 : 60;
@@ -3666,7 +4059,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
 
     // reflection: a mirrored, fading copy of the shape below the original
     if (obj.reflection && shape) {
-        const maskId = "refl-mask-" + obj.id;
+        const maskId = uniqueDomId("refl-mask-" + obj.id);
         const grad = document.createElementNS(svgNS, "linearGradient");
         grad.setAttribute("id", maskId + "-grad");
         grad.setAttribute("x1", "0"); grad.setAttribute("y1", "0");
@@ -3745,7 +4138,7 @@ function renderObject(obj, defs, topLevel = true, slideIndex = state.current) {
         const div = document.createElement("div");
         div.className = "text-edit-box shape-text";
         div.setAttribute("data-id", obj.id);
-        div.style.fontFamily = `"${obj.fontFamily}", sans-serif`;
+        div.style.fontFamily = fontFamilyCss(obj.fontFamily);
         div.style.fontSize = obj.fontSize + "px";
         div.style.color = obj.fontColor;
         div.style.fontWeight = obj.bold ? "bold" : "normal";
@@ -3998,16 +4391,44 @@ function exitCropMode(apply) {
     render();
 }
 
-function renderCropOverlay(obj) {
-    const inv = 1 / (currentScale || 1);
-    const crop = obj.imgCrop || { top: 0, right: 0, bottom: 0, left: 0 };
+// Shared by renderCropOverlay (to draw it) and the crop drag handlers (to
+// hit-test it) so the two never drift out of sync with each other.
+function cropRectBounds(obj) {
+    const crop = Object.assign({ top: 0, right: 0, bottom: 0, left: 0 }, obj.imgCrop || {});
     const cl = (crop.left || 0) / 100 * obj.w;
     const ct = (crop.top || 0) / 100 * obj.h;
     const cr = (crop.right || 0) / 100 * obj.w;
     const cb = (crop.bottom || 0) / 100 * obj.h;
+    return { x1: obj.x + cl, y1: obj.y + ct, x2: obj.x + obj.w - cr, y2: obj.y + obj.h - cb };
+}
 
-    const x1 = obj.x + cl, y1 = obj.y + ct;
-    const x2 = obj.x + obj.w - cr, y2 = obj.y + obj.h - cb;
+const CROP_MARGIN = 5; // minimum crop window size, in %
+// Recomputes a single edge's crop % from the drag delta, shared by plain
+// edge drags and corner drags (a corner just updates two edges at once,
+// which is what makes a one-gesture diagonal crop possible).
+function cropEdgeValue(edgeName, dx, dy, sc, obj) {
+    const round1 = (v) => Math.round(v * 10) / 10; // 1 decimal — smooth, not noisy
+    if (edgeName === "top") return round1(Math.max(0, Math.min(100 - CROP_MARGIN - sc.bottom, sc.top + (dy / obj.h) * 100)));
+    if (edgeName === "bottom") return round1(Math.max(0, Math.min(100 - CROP_MARGIN - sc.top, sc.bottom - (dy / obj.h) * 100)));
+    if (edgeName === "left") return round1(Math.max(0, Math.min(100 - CROP_MARGIN - sc.right, sc.left + (dx / obj.w) * 100)));
+    if (edgeName === "right") return round1(Math.max(0, Math.min(100 - CROP_MARGIN - sc.left, sc.right - (dx / obj.w) * 100)));
+}
+const CROP_CORNER_EDGES = { tl: ["top", "left"], tr: ["top", "right"], bl: ["bottom", "left"], br: ["bottom", "right"] };
+
+// Coalesces rapid pointermove events into at most one render per animation
+// frame, so dragging a crop handle tracks the cursor smoothly instead of
+// re-rendering the whole slide synchronously on every mouse-move tick.
+let _cropRenderPending = false;
+function scheduleCropRender() {
+    if (_cropRenderPending) return;
+    _cropRenderPending = true;
+    requestAnimationFrame(() => { _cropRenderPending = false; render(); });
+}
+
+function renderCropOverlay(obj) {
+    const inv = 1 / (currentScale || 1);
+    const { x1, y1, x2, y2 } = cropRectBounds(obj);
+    const ct = y1 - obj.y, cb = obj.y + obj.h - y2, cl = x1 - obj.x, cr = obj.x + obj.w - x2;
 
     // Darken cropped-away areas
     const darkenStyle = "fill:rgba(0,0,0,0.45);pointer-events:none";
@@ -4040,6 +4461,17 @@ function renderCropOverlay(obj) {
         svg.appendChild(hl);
     }
 
+    // Interior pan zone: dragging from inside the crop window (away from any
+    // edge/corner handle) repositions it without resizing. Drawn first so
+    // edge/corner handles layered on top of it take hit-test priority.
+    if (x2 - x1 > 1 && y2 - y1 > 1) {
+        const pan = document.createElementNS(svgNS, "rect");
+        applyAttrs(pan, { x: x1, y: y1, width: x2 - x1, height: y2 - y1 });
+        pan.style.cssText = "fill:transparent;cursor:move";
+        pan.dataset.cropPan = "1";
+        svg.appendChild(pan);
+    }
+
     // Edge drag handles (invisible wide hit-zone + visible line)
     const hs = 8 * inv; // half hit-width
     const handles = [
@@ -4056,7 +4488,23 @@ function renderCropOverlay(obj) {
         svg.appendChild(r);
     });
 
-    // Corner handles
+    // Corner handles: a wider invisible hit-zone (draggable, resizes the two
+    // adjacent edges at once — i.e. crop diagonally) plus the small white
+    // square marker on top of it for visibility.
+    const cornerSpecs = [
+        { corner: "tl", x: x1, y: y1, cursor: "nwse-resize" },
+        { corner: "tr", x: x2, y: y1, cursor: "nesw-resize" },
+        { corner: "bl", x: x1, y: y2, cursor: "nesw-resize" },
+        { corner: "br", x: x2, y: y2, cursor: "nwse-resize" },
+    ];
+    const chs = 11 * inv; // half hit-size for the corner drag zone
+    cornerSpecs.forEach(({ corner, x, y, cursor }) => {
+        const hit = document.createElementNS(svgNS, "rect");
+        applyAttrs(hit, { x: x - chs, y: y - chs, width: chs * 2, height: chs * 2 });
+        hit.style.cssText = "fill:transparent;cursor:" + cursor;
+        hit.dataset.cropCorner = corner;
+        svg.appendChild(hit);
+    });
     const cs = 6 * inv;
     [[x1, y1], [x2, y1], [x1, y2], [x2, y2]].forEach(([cx, cy]) => {
         const c = document.createElementNS(svgNS, "rect");
@@ -4088,10 +4536,23 @@ function pasteSlide(afterIndex) {
     if (!slideCopyBuffer) return;
     pushHistory(true);
     const copy = JSON.parse(JSON.stringify(slideCopyBuffer));
+    // Joins whichever section the slide right before the insertion point
+    // belongs to (or none), rather than carrying over wherever it was
+    // originally copied from — keeps section ranges contiguous.
+    const neighbor = state.slides[afterIndex];
+    if (neighbor && neighbor.sectionId) copy.sectionId = neighbor.sectionId;
+    else delete copy.sectionId;
     state.slides.splice(afterIndex + 1, 0, copy);
     state.current = afterIndex + 1;
     state.selection = [];
     render(); renderProperties();
+}
+
+// Drops any section whose slides have all since been deleted, so it doesn't
+// linger as dead state.sections metadata.
+function pruneOrphanSections() {
+    const used = new Set(state.slides.map(s => s.sectionId).filter(Boolean));
+    state.sections = state.sections.filter(s => used.has(s.id));
 }
 
 function deleteSlide(i) {
@@ -4099,6 +4560,7 @@ function deleteSlide(i) {
     if (!confirm(`Delete slide ${i + 1}? This cannot be undone after the next save.`)) return;
     pushHistory(true);
     state.slides.splice(i, 1);
+    pruneOrphanSections();
     if (state.current >= state.slides.length) state.current = state.slides.length - 1;
     state.selection = [];
     render(); renderProperties();
@@ -4136,6 +4598,8 @@ const slideCtxMenu = (() => {
         menu.appendChild(item("Copy Slide", () => copySlide(targetIndex)));
         menu.appendChild(item("Paste Slide After", () => pasteSlide(targetIndex), !slideCopyBuffer));
         menu.appendChild(divider());
+        menu.appendChild(item("Add Section Before This Slide", () => addSectionBefore(targetIndex)));
+        menu.appendChild(divider());
         menu.appendChild(item("Delete Slide", () => deleteSlide(targetIndex), state.slides.length <= 1));
         const x = Math.min(e.clientX, window.innerWidth - 175);
         const y = Math.min(e.clientY, window.innerHeight - menu.offsetHeight - 10);
@@ -4156,6 +4620,107 @@ const slideCtxMenu = (() => {
     return { open, close };
 })();
 
+// ---- Sections ----
+// A section is just a named, collapsible label spanning a contiguous run of
+// slides — slides point at it via slide.sectionId rather than the section
+// tracking a start/end index, so slide insertion/deletion/duplication can't
+// desync a section's range from reality.
+function addSectionBefore(slideIndex) {
+    pushHistory(true);
+    const targetSlide = state.slides[slideIndex];
+    const oldSectionId = targetSlide.sectionId || null;
+    const newSection = { id: uid(), name: `Section ${state.sections.length + 1}`, collapsed: false };
+    state.sections.push(newSection);
+    // Claim this slide and every following slide that shared the same prior
+    // section membership (or lack thereof), stopping at the next existing
+    // boundary — this is what makes the new section's range contiguous.
+    for (let i = slideIndex; i < state.slides.length; i++) {
+        if ((state.slides[i].sectionId || null) !== oldSectionId) break;
+        state.slides[i].sectionId = newSection.id;
+    }
+    renderSlidesPanel();
+}
+
+function toggleSectionCollapsed(sectionId) {
+    const section = state.sections.find(s => s.id === sectionId);
+    if (!section) return;
+    section.collapsed = !section.collapsed;
+    renderSlidesPanel();
+}
+
+function renameSection(sectionId) {
+    const section = state.sections.find(s => s.id === sectionId);
+    if (!section) return;
+    const name = prompt("Section name:", section.name);
+    if (name === null) return;
+    pushHistory(true);
+    section.name = name.trim() || section.name;
+    renderSlidesPanel();
+}
+
+function removeSection(sectionId, alsoDeleteSlides) {
+    if (alsoDeleteSlides) {
+        const remaining = state.slides.filter(s => s.sectionId !== sectionId);
+        if (!remaining.length) { alert("Can't delete every slide in the presentation."); return; }
+        if (!confirm("Delete this section and all its slides? This cannot be undone after the next save.")) return;
+        pushHistory(true);
+        state.slides = remaining;
+        if (state.current >= state.slides.length) state.current = state.slides.length - 1;
+        state.selection = [];
+    } else {
+        pushHistory(true);
+        state.slides.forEach(s => { if (s.sectionId === sectionId) delete s.sectionId; });
+    }
+    state.sections = state.sections.filter(s => s.id !== sectionId);
+    render(); renderProperties();
+}
+
+const sectionCtxMenu = (() => {
+    const menu = document.createElement("div");
+    menu.id = "sectionContextMenu";
+    menu.style.cssText = "position:fixed;z-index:9000;background:#fff;border:1px solid #c8d4dc;border-radius:5px;box-shadow:0 4px 14px rgba(0,0,0,0.16);padding:4px 0;min-width:190px;font-size:0.82rem;display:none";
+    document.body.appendChild(menu);
+    let targetId = null;
+
+    function item(label, action) {
+        const btn = document.createElement("button");
+        btn.style.cssText = "display:block;width:100%;text-align:left;padding:6px 14px;background:none;border:none;cursor:pointer;color:#222";
+        btn.textContent = label;
+        btn.onmouseenter = () => { btn.style.background = "#e8f4f7"; };
+        btn.onmouseleave = () => { btn.style.background = "none"; };
+        btn.onclick = () => { close(); action(); };
+        return btn;
+    }
+    function divider() {
+        const d = document.createElement("div");
+        d.style.cssText = "height:1px;background:#e8eef2;margin:3px 0";
+        return d;
+    }
+    function open(e, sectionId) {
+        const section = state.sections.find(s => s.id === sectionId);
+        if (!section) return;
+        targetId = sectionId;
+        menu.innerHTML = "";
+        menu.appendChild(item(section.collapsed ? "Expand Section" : "Collapse Section", () => toggleSectionCollapsed(targetId)));
+        menu.appendChild(item("Rename Section", () => renameSection(targetId)));
+        menu.appendChild(divider());
+        menu.appendChild(item("Remove Section (Keep Slides)", () => removeSection(targetId, false)));
+        menu.appendChild(item("Remove Section and Slides", () => removeSection(targetId, true)));
+        const x = Math.min(e.clientX, window.innerWidth - 200);
+        menu.style.left = x + "px";
+        menu.style.top = e.clientY + "px";
+        menu.style.display = "block";
+        requestAnimationFrame(() => {
+            const h = menu.offsetHeight;
+            if (e.clientY + h > window.innerHeight - 4) menu.style.top = (window.innerHeight - h - 4) + "px";
+        });
+    }
+    function close() { menu.style.display = "none"; }
+    document.addEventListener("mousedown", (e) => { if (!menu.contains(e.target)) close(); }, true);
+    document.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+    return { open, close };
+})();
+
 // renderSlidesPanel() rebuilds every slide's mini-SVG thumbnail (not just the
 // current one), which is expensive for decks with many slides. render() calls
 // it on every single edit — including every tick of a slider drag — so a
@@ -4169,12 +4734,54 @@ function scheduleSlidesPanelRender() {
     _slidesPanelTimer = setTimeout(() => { _slidesPanelTimer = null; renderSlidesPanel(); }, 150);
 }
 
+function buildSectionHeader(section, count, firstIndex) {
+    const header = document.createElement("div");
+    header.className = "slide-section-header";
+    header.dataset.firstIndex = firstIndex;
+    const chevron = document.createElement("span");
+    chevron.className = "section-chevron";
+    chevron.textContent = section.collapsed ? "▸" : "▾";
+    header.appendChild(chevron);
+    const name = document.createElement("span");
+    name.className = "section-name";
+    name.textContent = section.name;
+    header.appendChild(name);
+    const countEl = document.createElement("span");
+    countEl.className = "section-count";
+    countEl.textContent = count;
+    header.appendChild(countEl);
+    header.onclick = () => toggleSectionCollapsed(section.id);
+    header.addEventListener("contextmenu", (e) => {
+        e.preventDefault();
+        sectionCtxMenu.open(e, section.id);
+    });
+    return header;
+}
+
 function renderSlidesPanel() {
     const list = document.getElementById("slidesList");
     list.innerHTML = "";
+
+    // Pre-count slides per section so headers can show a count badge and so
+    // we know whether a section's slides should be skipped while collapsed.
+    const countBySection = {};
+    state.slides.forEach(s => { if (s.sectionId) countBySection[s.sectionId] = (countBySection[s.sectionId] || 0) + 1; });
+
+    let lastSectionId; // sentinel: undefined, distinct from any real id or null
     state.slides.forEach((slide, i) => {
+        if (slide.sectionId !== lastSectionId) {
+            lastSectionId = slide.sectionId;
+            if (slide.sectionId) {
+                const section = state.sections.find(s => s.id === slide.sectionId);
+                if (section) list.appendChild(buildSectionHeader(section, countBySection[section.id] || 0, i));
+            }
+        }
+        const ownSection = slide.sectionId ? state.sections.find(s => s.id === slide.sectionId) : null;
+        if (ownSection && ownSection.collapsed) return; // hidden, but still present in state.slides
+
         const thumb = document.createElement("div");
         thumb.className = "slide-thumb" + (i === state.current ? " active" : "");
+        thumb.dataset.slideIndex = i;
         thumb.style.aspectRatio = `${SLIDE_W} / ${SLIDE_H}`;
         const miniSvg = document.createElementNS(svgNS, "svg");
         miniSvg.setAttribute("viewBox", `0 0 ${SLIDE_W} ${SLIDE_H}`);
@@ -4208,6 +4815,7 @@ function renderSlidesPanel() {
         thumb.appendChild(del);
 
         thumb.onclick = () => {
+            if (_justDraggedSlide) return; // suppress the click a real drag-drop generates
             state.current = i;
             state.selection = [];
             render(); renderProperties();
@@ -4218,9 +4826,134 @@ function renderSlidesPanel() {
             render(); renderProperties();
             slideCtxMenu.open(e, i);
         });
+        thumb.addEventListener("pointerdown", (e) => {
+            // Mouse/pen only — touch is left alone so it still scrolls the
+            // panel normally instead of fighting a drag gesture (the canvas
+            // has the same kind of pan-vs-interact split for touch).
+            if (e.pointerType === "touch") return;
+            if (e.target.closest(".slide-del")) return;
+            beginSlideDrag(i, e.clientX, e.clientY);
+        });
         list.appendChild(thumb);
     });
 }
+
+// ---- Drag-to-reorder slides ----
+const SLIDE_DRAG_THRESHOLD = 5; // px of movement before a press becomes a drag, not a click
+let slideDragState = null; // { fromIndex, startX, startY, dragging, thumbEl }
+let _justDraggedSlide = false; // guards the click a real drag-drop generates from also re-selecting
+
+function beginSlideDrag(index, clientX, clientY) {
+    slideDragState = { fromIndex: index, startX: clientX, startY: clientY, dragging: false, thumbEl: null };
+}
+
+// Walks the rendered slide list (thumbnails + section headers) and finds
+// which insertion gap is closest to clientY, returning the array index the
+// dragged slide should land at if dropped now. Headers count as the
+// position of their section's first slide — you can't see inside a
+// collapsed section to drop "between" its hidden members, so dropping near
+// its header just means "before this section."
+function computeSlideDropIndex(clientY) {
+    const list = document.getElementById("slidesList");
+    // Exclude the thumbnail being dragged — its own translateY makes
+    // getBoundingClientRect() reflect a moving position, which would make
+    // the gaps immediately around it a moving target instead of a stable
+    // reference for where everything ELSE actually sits.
+    const children = Array.from(list.children).filter(c => !c.classList.contains("dragging"));
+    const gaps = [];
+    let prevBottom = null;
+    children.forEach(child => {
+        const rect = child.getBoundingClientRect();
+        const itemIndex = child.classList.contains("slide-thumb")
+            ? parseInt(child.dataset.slideIndex, 10)
+            : parseInt(child.dataset.firstIndex, 10);
+        gaps.push({ y: prevBottom === null ? rect.top : (prevBottom + rect.top) / 2, insertIndex: itemIndex });
+        prevBottom = rect.bottom;
+    });
+    if (prevBottom !== null) gaps.push({ y: prevBottom, insertIndex: state.slides.length });
+    if (!gaps.length) return 0;
+    let best = gaps[0], bestDist = Infinity;
+    gaps.forEach(g => {
+        const d = Math.abs(g.y - clientY);
+        if (d < bestDist) { bestDist = d; best = g; }
+    });
+    return best.insertIndex;
+}
+
+function showSlideDropIndicator(beforeIndex) {
+    clearSlideDropIndicator();
+    const list = document.getElementById("slidesList");
+    const target = beforeIndex >= state.slides.length
+        ? null
+        : list.querySelector(`.slide-thumb[data-slide-index="${beforeIndex}"]`) ||
+          list.querySelector(`.slide-section-header[data-first-index="${beforeIndex}"]`);
+    const indicator = document.createElement("div");
+    indicator.className = "slide-drop-indicator";
+    indicator.id = "slideDropIndicator";
+    if (target) list.insertBefore(indicator, target);
+    else list.appendChild(indicator);
+}
+function clearSlideDropIndicator() {
+    const el = document.getElementById("slideDropIndicator");
+    if (el) el.remove();
+}
+
+// Moves state.slides[fromIndex] so it ends up immediately before whatever is
+// currently at insertIndex, adopts the section of whichever neighbor it
+// lands next to (mirroring how paste/addSlide already inherit a section),
+// and follows the move with both the current-slide pointer and undo history.
+function moveSlideTo(fromIndex, insertIndex) {
+    if (insertIndex === fromIndex || insertIndex === fromIndex + 1) return; // dropped back in place
+    pushHistory(true);
+    const [moved] = state.slides.splice(fromIndex, 1);
+    const adjustedTo = insertIndex > fromIndex ? insertIndex - 1 : insertIndex;
+    state.slides.splice(adjustedTo, 0, moved);
+
+    const neighborBefore = state.slides[adjustedTo - 1];
+    const neighborAfter = state.slides[adjustedTo + 1];
+    if (neighborBefore && neighborBefore.sectionId) moved.sectionId = neighborBefore.sectionId;
+    else if (neighborAfter && neighborAfter.sectionId) moved.sectionId = neighborAfter.sectionId;
+    else delete moved.sectionId;
+
+    pruneOrphanSections();
+    state.current = state.slides.indexOf(moved);
+    state.selection = [];
+}
+
+window.addEventListener("pointermove", (e) => {
+    if (!slideDragState) return;
+    const dx = e.clientX - slideDragState.startX, dy = e.clientY - slideDragState.startY;
+    if (!slideDragState.dragging) {
+        if (Math.hypot(dx, dy) < SLIDE_DRAG_THRESHOLD) return;
+        slideDragState.dragging = true;
+        const list = document.getElementById("slidesList");
+        slideDragState.thumbEl = list.querySelector(`.slide-thumb[data-slide-index="${slideDragState.fromIndex}"]`);
+        if (slideDragState.thumbEl) slideDragState.thumbEl.classList.add("dragging");
+        document.body.style.cursor = "grabbing";
+    }
+    if (slideDragState.thumbEl) slideDragState.thumbEl.style.transform = `translateY(${dy}px)`;
+    showSlideDropIndicator(computeSlideDropIndex(e.clientY));
+});
+
+window.addEventListener("pointerup", (e) => {
+    if (!slideDragState) return;
+    const { fromIndex, dragging, thumbEl } = slideDragState;
+    // Compute the drop target BEFORE clearing the dragging class/transform —
+    // computeSlideDropIndex() deliberately excludes the ".dragging" element
+    // so the gaps around it stay stable; clearing that first would put it
+    // back in the gap computation at its original (untransformed) position,
+    // silently computing a different index than what the live preview showed.
+    const insertIndex = dragging ? computeSlideDropIndex(e.clientY) : null;
+    if (thumbEl) { thumbEl.classList.remove("dragging"); thumbEl.style.transform = ""; }
+    document.body.style.cursor = "";
+    clearSlideDropIndicator();
+    slideDragState = null;
+    if (!dragging) return; // never crossed the threshold — a normal click, let it select as usual
+    moveSlideTo(fromIndex, insertIndex);
+    _justDraggedSlide = true;
+    setTimeout(() => { _justDraggedSlide = false; }, 0);
+    render(); renderProperties();
+});
 
 document.getElementById("slidesList").addEventListener("click", (e) => {
     // Paste on click of empty sidebar area (not on a slide thumb or its children)
@@ -4231,7 +4964,10 @@ document.getElementById("slidesList").addEventListener("click", (e) => {
 
 document.getElementById("addSlideBtn").onclick = () => {
     pushHistory(true);
-    state.slides.push(makeSlide());
+    const newSlide = makeSlide();
+    const lastSlide = state.slides[state.slides.length - 1];
+    if (lastSlide && lastSlide.sectionId) newSlide.sectionId = lastSlide.sectionId;
+    state.slides.push(newSlide);
     state.current = state.slides.length - 1;
     state.selection = [];
     render(); renderProperties();
@@ -4260,7 +4996,7 @@ document.getElementById("imageInput").onchange = (e) => {
     const reader = new FileReader();
     reader.onload = () => {
         const img = new Image();
-        img.onload = () => {
+        img.onload = async () => {
             let w = img.width, h = img.height;
             const maxDim = 300;
             if (w > maxDim || h > maxDim) {
@@ -4268,7 +5004,7 @@ document.getElementById("imageInput").onchange = (e) => {
                 w *= scale; h *= scale;
             }
             const obj = makeObject("image", (SLIDE_W - w) / 2, (SLIDE_H - h) / 2, w, h);
-            obj.src = reader.result;
+            obj.src = await maybeCompressForIPad(reader.result);
             curSlide().objects.push(obj);
             state.selection = [obj.id];
             setTool("select");
@@ -4291,10 +5027,26 @@ document.querySelectorAll(".ribbon-dropdown-toggle").forEach(btn => {
         const wasOpen = menu.classList.contains("open");
         closeAllDropdowns();
         if (!wasOpen) {
+            // Some menus (e.g. Format Background) rebuild their own content
+            // on open via this event, which can change the menu's size —
+            // let that happen before we measure/clamp below, not after.
+            menu.dispatchEvent(new CustomEvent("dropdown-opening"));
             const rect = btn.getBoundingClientRect();
             menu.style.left = rect.left + "px";
             menu.style.top = rect.bottom + "px";
             menu.classList.add("open");
+            // Re-measure now that it's actually laid out (it was display:none
+            // a moment ago) and clamp into the viewport — a wide menu like
+            // the Symbol picker anchored to a button near the right edge of
+            // the ribbon would otherwise run off the page.
+            const menuRect = menu.getBoundingClientRect();
+            const margin = 8;
+            if (menuRect.right > window.innerWidth - margin) {
+                menu.style.left = Math.max(margin, window.innerWidth - margin - menuRect.width) + "px";
+            }
+            if (menuRect.bottom > window.innerHeight - margin) {
+                menu.style.top = Math.max(margin, rect.top - menuRect.height) + "px";
+            }
         }
     };
 });
@@ -5854,6 +6606,169 @@ function loadPolyBool() {
     return _polyBoolPromise;
 }
 
+// Mermaid is only needed for the UML Diagram tool — load it on first use.
+let _mermaidPromise = null;
+function loadMermaid() {
+    if (typeof window.mermaid !== "undefined") return Promise.resolve();
+    if (!_mermaidPromise) {
+        _mermaidPromise = new Promise((resolve, reject) => {
+            const s = document.createElement("script");
+            s.src = "https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js";
+            s.onload = () => {
+                // htmlLabels:false keeps text as native SVG <text> instead of
+                // <foreignObject> — the latter permanently taints any canvas
+                // we later rasterize the diagram onto (img+drawImage), the
+                // same restriction that affects copying text-bearing shapes
+                // to the system clipboard elsewhere in this file.
+                window.mermaid.initialize({
+                    startOnLoad: false, securityLevel: "loose",
+                    flowchart: { htmlLabels: false }, class: { htmlLabels: false },
+                    state: { htmlLabels: false }, er: { htmlLabels: false },
+                });
+                resolve();
+            };
+            s.onerror = () => { _mermaidPromise = null; reject(new Error("Failed to load Mermaid")); };
+            document.head.appendChild(s);
+        });
+    }
+    return _mermaidPromise;
+}
+
+const UML_TEMPLATES = {
+    classDiagram: `classDiagram
+    Animal <|-- Dog
+    Animal : +String name
+    Animal : +makeSound()
+    Dog : +bark()`,
+    sequenceDiagram: `sequenceDiagram
+    Alice->>Bob: Hello Bob, how are you?
+    Bob-->>Alice: I am good thanks!`,
+    "stateDiagram-v2": `stateDiagram-v2
+    [*] --> Idle
+    Idle --> Running : start
+    Running --> Idle : stop
+    Running --> [*]`,
+    erDiagram: `erDiagram
+    CUSTOMER ||--o{ ORDER : places
+    ORDER ||--|{ LINE-ITEM : contains`,
+    "flowchart TD": `flowchart TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[Do thing]
+    B -->|No| D[End]`,
+};
+
+const umlModal = document.getElementById("umlModal");
+const umlCodeInput = document.getElementById("umlCode");
+const umlPreviewEl = document.getElementById("umlPreview");
+const umlErrorEl = document.getElementById("umlError");
+let _umlRenderSeq = 0;
+
+async function renderUmlPreview() {
+    const mySeq = ++_umlRenderSeq;
+    const code = umlCodeInput.value.trim();
+    if (!code) { umlPreviewEl.innerHTML = ""; umlErrorEl.textContent = ""; return; }
+    const renderId = "umlMermaidRender" + mySeq;
+    try {
+        await loadMermaid();
+        const { svg } = await window.mermaid.render(renderId, code);
+        if (mySeq !== _umlRenderSeq) return; // a newer render superseded this one
+        umlPreviewEl.innerHTML = svg;
+        umlErrorEl.textContent = "";
+    } catch (err) {
+        if (mySeq !== _umlRenderSeq) return;
+        umlErrorEl.textContent = "Diagram error: " + (err.message || err).toString().split("\n")[0];
+    } finally {
+        // On a parse error, mermaid's sandbox container (#d<renderId>, used
+        // internally to lay the diagram out off-DOM) is left behind in
+        // <body> instead of being cleaned up — remove it ourselves either way.
+        const sandbox = document.getElementById("d" + renderId);
+        if (sandbox) sandbox.remove();
+    }
+}
+
+let _umlPreviewTimer = null;
+umlCodeInput.addEventListener("input", () => {
+    clearTimeout(_umlPreviewTimer);
+    _umlPreviewTimer = setTimeout(renderUmlPreview, 400);
+});
+// Tab/Shift+Tab indent the code instead of moving focus to the next control,
+// like a normal code editor — the textarea's default Tab behavior is useless
+// here since Mermaid syntax relies on indentation.
+umlCodeInput.addEventListener("keydown", (e) => {
+    if (e.key !== "Tab") return;
+    e.preventDefault();
+    const value = umlCodeInput.value;
+    const start = umlCodeInput.selectionStart, end = umlCodeInput.selectionEnd;
+    if (e.shiftKey) {
+        const lineStart = value.lastIndexOf("\n", start - 1) + 1;
+        const stripMatch = value.slice(lineStart, start).match(/^ {1,4}/);
+        if (!stripMatch) return;
+        const stripLen = stripMatch[0].length;
+        umlCodeInput.value = value.slice(0, lineStart) + value.slice(lineStart + stripLen, start) + value.slice(start);
+        umlCodeInput.selectionStart = umlCodeInput.selectionEnd = start - stripLen;
+    } else {
+        umlCodeInput.value = value.slice(0, start) + "    " + value.slice(end);
+        umlCodeInput.selectionStart = umlCodeInput.selectionEnd = start + 4;
+    }
+    umlCodeInput.dispatchEvent(new Event("input"));
+});
+document.getElementById("umlDiagramType").addEventListener("change", (e) => {
+    umlCodeInput.value = UML_TEMPLATES[e.target.value] || "";
+    renderUmlPreview();
+});
+
+function showUmlModal() {
+    umlModal.classList.add("active");
+    if (!umlCodeInput.value.trim()) {
+        const type = document.getElementById("umlDiagramType").value;
+        umlCodeInput.value = UML_TEMPLATES[type] || "";
+    }
+    renderUmlPreview();
+}
+function hideUmlModal() { umlModal.classList.remove("active"); }
+document.getElementById("umlBtn").onclick = showUmlModal;
+document.getElementById("umlCancelBtn").onclick = hideUmlModal;
+umlModal.addEventListener("mousedown", (e) => { if (e.target === umlModal) hideUmlModal(); });
+
+async function insertUmlDiagram() {
+    const svgEl = umlPreviewEl.querySelector("svg");
+    if (!svgEl || umlErrorEl.textContent) return;
+    const code = umlCodeInput.value;
+
+    const svgStr = new XMLSerializer().serializeToString(svgEl);
+    const blob = new Blob([svgStr], { type: "image/svg+xml" });
+    const url = URL.createObjectURL(blob);
+    const img = new Image();
+    await new Promise((resolve, reject) => { img.onload = resolve; img.onerror = reject; img.src = url; });
+    URL.revokeObjectURL(url);
+
+    const scale = 3;
+    const naturalW = img.naturalWidth || svgEl.viewBox?.baseVal?.width || 600;
+    const naturalH = img.naturalHeight || svgEl.viewBox?.baseVal?.height || 400;
+    const canvas = document.createElement("canvas");
+    canvas.width = naturalW * scale;
+    canvas.height = naturalH * scale;
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    const dataURL = canvas.toDataURL("image/png");
+
+    pushHistory(true);
+    const maxW = 480, maxH = 360;
+    let w = naturalW, h = naturalH;
+    const ratio = Math.min(maxW / w, maxH / h, 1);
+    w *= ratio; h *= ratio;
+
+    const obj = makeObject("image", (SLIDE_W - w) / 2, (SLIDE_H - h) / 2, w, h);
+    obj.src = dataURL;
+    obj.mermaidSrc = code;
+    curSlide().objects.push(obj);
+    state.selection = [obj.id];
+    setTool("select");
+    render(); renderProperties();
+    hideUmlModal();
+}
+document.getElementById("umlInsertBtn").onclick = insertUmlDiagram;
+
 function showPlotModal() {
     plotModal.classList.add("active");
     updatePlot2dPreview();
@@ -6297,20 +7212,155 @@ document.getElementById("plotInsertBtn").onclick = () => {
 };
 
 // ============ Insert tab: Symbol ============
-document.querySelectorAll("#symbolDropdownMenu button[data-symbol]").forEach(btn => {
-    btn.onclick = () => {
-        pushHistory(true);
-        const obj = makeObject("text", (SLIDE_W - 60) / 2, (SLIDE_H - 60) / 2, 60, 60);
-        obj.text = btn.dataset.symbol;
-        obj.fontSize = 36;
-        obj.align = "center";
-        curSlide().objects.push(obj);
-        state.selection = [obj.id];
-        setTool("select");
-        render(); renderProperties();
-        document.getElementById("symbolDropdownMenu").classList.remove("open");
-    };
-});
+const MATH_SYMBOL_LIBRARY = [
+    // ---- Greek lowercase (incl. LaTeX variant forms) ----
+    ...[
+        ["α","alpha"],["β","beta"],["γ","gamma"],["δ","delta"],["ε","epsilon"],["ζ","zeta"],
+        ["η","eta"],["θ","theta"],["ι","iota"],["κ","kappa"],["λ","lambda"],["μ","mu"],
+        ["ν","nu"],["ξ","xi"],["ο","omicron"],["π","pi"],["ρ","rho"],["σ","sigma"],
+        ["τ","tau"],["υ","upsilon"],["φ","phi"],["χ","chi"],["ψ","psi"],["ω","omega"],
+        ["ϵ","varepsilon"],["ϑ","vartheta"],["ϖ","varpi"],["ϱ","varrho"],["ς","varsigma (final sigma)"],["ϕ","varphi"],
+    ].map(([char, label]) => ({ char, label, cat: "Greek Lowercase" })),
+    // ---- Greek uppercase ----
+    ...[
+        ["Α","Alpha"],["Β","Beta"],["Γ","Gamma"],["Δ","Delta"],["Ε","Epsilon"],["Ζ","Zeta"],
+        ["Η","Eta"],["Θ","Theta"],["Ι","Iota"],["Κ","Kappa"],["Λ","Lambda"],["Μ","Mu"],
+        ["Ν","Nu"],["Ξ","Xi"],["Ο","Omicron"],["Π","Pi"],["Ρ","Rho"],["Σ","Sigma"],
+        ["Τ","Tau"],["Υ","Upsilon"],["Φ","Phi"],["Χ","Chi"],["Ψ","Psi"],["Ω","Omega"],
+    ].map(([char, label]) => ({ char, label, cat: "Greek Uppercase" })),
+    // ---- Operators ----
+    ...[
+        ["±","Plus-minus"],["∓","Minus-plus"],["×","Multiplication"],["÷","Division"],["⋅","Dot product"],
+        ["∗","Asterisk operator"],["∘","Ring operator (composition)"],["√","Square root"],["∛","Cube root"],["∜","Fourth root"],
+        ["∞","Infinity"],["‰","Per mille"],["⊕","Direct sum / XOR"],["⊖","Symmetric difference"],["⊗","Tensor product"],
+        ["⊘","Circled division"],["⊙","Circled dot"],["⌈","Left ceiling"],["⌉","Right ceiling"],["⌊","Left floor"],["⌋","Right floor"],
+    ].map(([char, label]) => ({ char, label, cat: "Operators" })),
+    // ---- Relations ----
+    ...[
+        ["=","Equals"],["≠","Not equal"],["≈","Approximately equal"],["≅","Congruent"],["≡","Identical to"],
+        ["≢","Not identical to"],["∼","Similar to"],["≃","Asymptotically equal"],["≤","Less than or equal"],["≥","Greater than or equal"],
+        ["≦","Less-than over equal"],["≧","Greater-than over equal"],["≪","Much less than"],["≫","Much greater than"],
+        ["∝","Proportional to"],["≐","Approaches the limit"],["≜","Equal by definition"],["≟","Questioned equal to"],
+        ["≺","Precedes"],["≻","Succeeds"],["⪯","Precedes or equal"],["⪰","Succeeds or equal"],
+    ].map(([char, label]) => ({ char, label, cat: "Relations" })),
+    // ---- Set theory ----
+    ...[
+        ["∈","Element of"],["∉","Not an element of"],["∋","Contains as member"],["∌","Does not contain as member"],
+        ["⊂","Subset of"],["⊃","Superset of"],["⊆","Subset of or equal to"],["⊇","Superset of or equal to"],
+        ["⊄","Not a subset of"],["⊅","Not a superset of"],["∪","Union"],["∩","Intersection"],["∖","Set minus"],
+        ["∅","Empty set"],["℘","Power set / Weierstrass p"],["⊎","Multiset union"],["∁","Complement"],["ℵ","Aleph (cardinality)"],
+        ["ℕ","Natural numbers"],["ℤ","Integers"],["ℚ","Rational numbers"],["ℝ","Real numbers"],["ℂ","Complex numbers"],
+    ].map(([char, label]) => ({ char, label, cat: "Set Theory" })),
+    // ---- Logic ----
+    ...[
+        ["∧","Logical and"],["∨","Logical or"],["¬","Logical not"],["⇒","Implies"],["⇐","Implied by"],
+        ["⇔","If and only if"],["↔","Iff (double arrow)"],["∀","For all"],["∃","There exists"],["∄","There does not exist"],
+        ["⊤","Top / tautology"],["⊥","Bottom / contradiction"],["⊢","Proves / turnstile"],["⊨","Models / double turnstile"],
+        ["∴","Therefore"],["∵","Because"],["⟺","Long iff"],["⟹","Long implies"],["⟸","Long implied by"],["⟷","Long double arrow"],
+    ].map(([char, label]) => ({ char, label, cat: "Logic" })),
+    // ---- Calculus & Analysis ----
+    ...[
+        ["∫","Integral"],["∬","Double integral"],["∭","Triple integral"],["∮","Contour integral"],["∯","Surface integral"],
+        ["∰","Volume integral"],["∇","Nabla / gradient"],["∂","Partial derivative"],["∑","Summation"],["∏","Product"],
+        ["∐","Coproduct"],["′","Prime"],["″","Double prime"],["‴","Triple prime"],["∆","Increment"],["ℓ","Script small l"],
+    ].map(([char, label]) => ({ char, label, cat: "Calculus & Analysis" })),
+    // ---- Arrows ----
+    ...[
+        ["→","Right arrow"],["←","Left arrow"],["↔","Left-right arrow"],["↑","Up arrow"],["↓","Down arrow"],
+        ["↕","Up-down arrow"],["⇒","Rightwards double arrow"],["⇐","Leftwards double arrow"],["⇔","Left-right double arrow"],
+        ["↦","Maps to"],["↪","Hooked right arrow"],["↩","Hooked left arrow"],["⇀","Rightwards harpoon"],["⇁","Rightwards harpoon (down)"],
+        ["⇌","Rightwards-leftwards harpoons"],["⇋","Leftwards-rightwards harpoons"],["↗","North east arrow"],["↘","South east arrow"],
+        ["↙","South west arrow"],["↖","North west arrow"],["⇈","Up paired arrows"],["⇊","Down paired arrows"],["↺","Anticlockwise"],["↻","Clockwise"],
+    ].map(([char, label]) => ({ char, label, cat: "Arrows" })),
+    // ---- Geometry ----
+    ...[
+        ["∠","Angle"],["∡","Measured angle"],["⊥","Perpendicular"],["∥","Parallel"],["△","Triangle"],
+        ["∟","Right angle"],["°","Degree"],["′","Minute (arc)"],["″","Second (arc)"],["≅","Congruent to"],
+        ["∼","Similar to"],["▱","Parallelogram"],["◻","White square"],["◊","Diamond"],
+    ].map(([char, label]) => ({ char, label, cat: "Geometry" })),
+    // ---- Miscellaneous ----
+    ...[
+        ["★","Star"],["♥","Heart"],["©","Copyright"],["®","Registered"],["™","Trademark"],["§","Section"],
+        ["¶","Pilcrow"],["†","Dagger"],["‡","Double dagger"],["•","Bullet"],["…","Ellipsis"],["№","Numero"],
+        ["✓","Check mark"],["✗","Ballot cross"],["♀","Female"],["♂","Male"],
+    ].map(([char, label]) => ({ char, label, cat: "Miscellaneous" })),
+];
+
+function insertSymbolObject(char) {
+    pushHistory(true);
+    const obj = makeObject("text", (SLIDE_W - 60) / 2, (SLIDE_H - 60) / 2, 60, 60);
+    obj.text = char;
+    obj.fontSize = 36;
+    obj.align = "center";
+    curSlide().objects.push(obj);
+    state.selection = [obj.id];
+    setTool("select");
+    render(); renderProperties();
+}
+
+let symbolPickerCat = "All";
+let symbolPickerSearch = "";
+
+function buildSymbolGrid() {
+    const grid = document.getElementById("symbolPickerGrid");
+    if (!grid) return;
+    const search = symbolPickerSearch.toLowerCase();
+    const symbols = MATH_SYMBOL_LIBRARY.filter(s =>
+        (symbolPickerCat === "All" || s.cat === symbolPickerCat) &&
+        (!search || s.label.toLowerCase().includes(search) || s.char === symbolPickerSearch)
+    );
+    grid.innerHTML = "";
+    grid.scrollTop = 0;
+    symbols.forEach(s => {
+        const btn = document.createElement("button");
+        btn.className = "symbol-grid-btn";
+        btn.title = s.label;
+        btn.textContent = s.char;
+        btn.addEventListener("mousedown", e => e.stopPropagation());
+        btn.addEventListener("click", () => {
+            insertSymbolObject(s.char);
+            document.getElementById("symbolDropdownMenu").classList.remove("open");
+        });
+        grid.appendChild(btn);
+    });
+    if (!symbols.length) {
+        grid.innerHTML = '<p style="color:#999;font-size:0.78rem;padding:8px;margin:0">No symbols found</p>';
+    }
+}
+
+(function initSymbolPicker() {
+    const searchInput = document.getElementById("symbolSearchInput");
+    const catBar = document.getElementById("symbolCatBar");
+    if (!searchInput || !catBar) return;
+
+    searchInput.addEventListener("input", e => {
+        symbolPickerSearch = e.target.value;
+        buildSymbolGrid();
+    });
+    searchInput.addEventListener("keydown", e => e.stopPropagation());
+    searchInput.addEventListener("mousedown", e => e.stopPropagation());
+    searchInput.addEventListener("click", e => e.stopPropagation());
+
+    catBar.querySelectorAll(".icon-cat-btn").forEach(btn => {
+        btn.addEventListener("mousedown", e => e.stopPropagation());
+        btn.addEventListener("click", e => {
+            e.stopPropagation();
+            catBar.querySelectorAll(".icon-cat-btn").forEach(b => b.classList.remove("active"));
+            btn.classList.add("active");
+            symbolPickerCat = btn.dataset.cat;
+            buildSymbolGrid();
+        });
+    });
+
+    const menu = document.getElementById("symbolDropdownMenu");
+    if (menu) {
+        const obs = new MutationObserver(() => {
+            if (menu.classList.contains("open")) buildSymbolGrid();
+        });
+        obs.observe(menu, { attributes: true, attributeFilter: ["class"] });
+    }
+    buildSymbolGrid();
+})();
 
 // ============ Insert tab: Video / Audio ============
 document.getElementById("videoBtn").onclick = () => document.getElementById("videoInput").click();
@@ -7165,7 +8215,7 @@ async function _pasteImageBlob(blob) {
         reader.onload = () => {
             const dataURL = reader.result;
             const img = new Image();
-            img.onload = () => {
+            img.onload = async () => {
                 let w = img.width, h = img.height;
                 const maxDim = Math.min(400, SLIDE_W * 0.7);
                 if (w > maxDim || h > maxDim) {
@@ -7175,7 +8225,7 @@ async function _pasteImageBlob(blob) {
                 }
                 pushHistory(true);
                 const obj = makeObject("image", (SLIDE_W - w) / 2, (SLIDE_H - h) / 2, w, h);
-                obj.src = dataURL;
+                obj.src = await maybeCompressForIPad(dataURL);
                 curSlide().objects.push(obj);
                 state.selection = [obj.id];
                 setTool("select");
@@ -7269,6 +8319,43 @@ function svgPoint(e) {
 }
 
 let drag = null; // current drag operation
+
+// Coalesces a drag mode's per-tick visual update (render() + whatever else
+// needs to run in the same pass, e.g. drawAlignmentGuides) into at most one
+// per animation frame. pointermove can fire faster than the display can
+// actually paint — especially common with touchscreens/Apple Pencil on
+// iPads, which report input at a higher rate than 60Hz — so without this,
+// every single one of those events was doing a full render() (rebuilding
+// every object's DOM, including recreating any SVG filters on shadows/
+// glows/images from scratch) even though only the LAST one before each
+// repaint could ever actually be seen. Only the data mutation (obj.x/y
+// etc.) stays synchronous every tick; this only throttles the expensive
+// redraw. Always overwrites with the latest tick's task, so the frame that
+// does run reflects the most current state, never a stale intermediate one.
+let _dragRenderPending = false;
+let _dragRenderTask = null;
+function scheduleDragRender(task) {
+    _dragRenderTask = task;
+    if (_dragRenderPending) return;
+    _dragRenderPending = true;
+    requestAnimationFrame(() => {
+        _dragRenderPending = false;
+        const t = _dragRenderTask;
+        _dragRenderTask = null;
+        if (t) t();
+    });
+}
+// Runs a still-pending scheduled render synchronously right now, instead of
+// however many milliseconds away the next animation frame happens to be.
+// Called the moment a drag ends — releasing the mouse/finger should show the
+// true final position immediately, not whatever the second-to-last tick
+// looked like for up to a frame. The animation frame that was already
+// scheduled still fires afterward, but with the task cleared it's a no-op.
+function flushDragRender() {
+    const t = _dragRenderTask;
+    _dragRenderTask = null;
+    if (t) t();
+}
 let lastClick = null; // for manual double-click detection on shapes
 let touchPanState = null; // active touch-to-pan gesture (see pointerdown below)
 const TOUCH_PAN_THRESHOLD = 4;
@@ -7313,6 +8400,7 @@ function beginPinch() {
     pinchState = { startDist: touchPinchDist(), startZoom: state.zoom };
     _zoomBaseW = parseFloat(canvasWrap.style.width) || canvasWrap.offsetWidth;
     _zoomBaseH = parseFloat(canvasWrap.style.height) || canvasWrap.offsetHeight;
+    captureZoomAnchor();
 }
 
 function updatePinch() {
@@ -7325,6 +8413,7 @@ function updatePinch() {
     svg.style.transform = `scale(${ratio})`;
     canvasWrap.style.width = _zoomBaseW * ratio + "px";
     canvasWrap.style.height = _zoomBaseH * ratio + "px";
+    scrollToZoomAnchor(_zoomStartScale * ratio);
     document.getElementById("zoomLevel").textContent = Math.round(state.zoom * 100) + "%";
     document.getElementById("zoomSlider").value = Math.round(state.zoom * 100);
 }
@@ -7335,6 +8424,10 @@ function endPinch() {
     _zoomDebounce = setTimeout(() => {
         _zoomBaseW = null; _zoomBaseH = null;
         applyZoom();
+        // No separate scrollToSelection() needed — the anchor tracked
+        // throughout the gesture already IS the selection's center when one
+        // exists, so this just locks in that exact same position.
+        scrollToZoomAnchor(currentScale);
     }, 120);
 }
 
@@ -7405,13 +8498,17 @@ svg.addEventListener("pointerdown", (e) => {
     const pt = svgPoint(e);
     const target = e.target;
 
-    // Crop mode: handle edge dragging
+    // Crop mode: handle edge/corner dragging, or panning from inside
     if (cropState) {
         const edge = target.dataset && target.dataset.cropEdge;
-        if (edge) {
+        const corner = target.dataset && target.dataset.cropCorner;
+        const pan = target.dataset && target.dataset.cropPan;
+        if (edge || corner || pan) {
             const obj = getObj(cropState.id);
             if (obj) {
-                cropState.edge = edge;
+                cropState.edge = edge || null;
+                cropState.corner = corner || null;
+                cropState.pan = !!pan;
                 cropState.startPt = { x: pt.x, y: pt.y };
                 cropState.startCrop = Object.assign({ top: 0, right: 0, bottom: 0, left: 0 }, obj.imgCrop || {});
                 e.preventDefault(); e.stopPropagation();
@@ -7663,18 +8760,153 @@ svg.addEventListener("pointerdown", (e) => {
 });
 
 const ALIGN_SNAP_THRESHOLD = 6;
+const GUIDE_TOL = 1.0; // tolerance for "aligned"/"equal gap" once a snap has been applied
 
 // how far (in slide units) the mouse can move between mousedown and mouseup
 // on an object before it counts as a drag-to-move rather than a click
 const MOVE_CLICK_THRESHOLD = 3;
+
+// Finds an equal-spacing opportunity along one axis for a box spanning
+// [trialMin, trialMax]. lo(o)/hi(o) read an object's near/far edge on this
+// axis. Checks, in priority order:
+//  1. "between" — the box is sandwiched between two stationary neighbours
+//     whose gaps to it are (nearly) equal.
+//  2. "extend-before"/"extend-after" — only one neighbour is present, but
+//     THAT neighbour already has its own matching gap to a further neighbour
+//     on its far side, i.e. the box is continuing an existing row/column's
+//     established rhythm rather than being sandwiched by two new ones.
+// Returns null, or { delta, gap, segA: {nearEdge,farEdge}, segB: {nearEdge,farEdge} }
+// where delta is how far trialMin must move to make the gaps exactly equal,
+// and segA/segB are the two (now-equal) gap spans to draw guides for.
+function findSpacingMatch(trialMin, trialMax, stationary, lo, hi) {
+    let beforeObj = null, beforeGap = Infinity;
+    stationary.forEach(o => { const g = trialMin - hi(o); if (g >= -GUIDE_TOL && g < beforeGap) { beforeGap = Math.max(g, 0); beforeObj = o; } });
+    let afterObj = null, afterGap = Infinity;
+    stationary.forEach(o => { const g = lo(o) - trialMax; if (g >= -GUIDE_TOL && g < afterGap) { afterGap = Math.max(g, 0); afterObj = o; } });
+
+    if (beforeObj && afterObj) {
+        const dist = Math.abs(beforeGap - afterGap);
+        if (dist <= ALIGN_SNAP_THRESHOLD) {
+            const gap = (beforeGap + afterGap) / 2;
+            const delta = (hi(beforeObj) + gap) - trialMin;
+            return { delta, gap, dist,
+                segA: { nearEdge: hi(beforeObj), farEdge: trialMin + delta },
+                segB: { nearEdge: trialMax + delta, farEdge: lo(afterObj) } };
+        }
+    }
+    if (beforeObj) {
+        let furtherObj = null, furtherGap = Infinity;
+        stationary.forEach(o => { if (o === beforeObj) return; const g = lo(beforeObj) - hi(o); if (g >= -GUIDE_TOL && g < furtherGap) { furtherGap = Math.max(g, 0); furtherObj = o; } });
+        if (furtherObj) {
+            const dist = Math.abs(furtherGap - beforeGap);
+            if (dist <= ALIGN_SNAP_THRESHOLD) {
+                const gap = (furtherGap + beforeGap) / 2;
+                const delta = (hi(beforeObj) + gap) - trialMin;
+                return { delta, gap, dist,
+                    segA: { nearEdge: hi(furtherObj), farEdge: lo(beforeObj) },
+                    segB: { nearEdge: hi(beforeObj), farEdge: trialMin + delta } };
+            }
+        }
+    }
+    if (afterObj) {
+        let furtherObj = null, furtherGap = Infinity;
+        stationary.forEach(o => { if (o === afterObj) return; const g = lo(o) - hi(afterObj); if (g >= -GUIDE_TOL && g < furtherGap) { furtherGap = Math.max(g, 0); furtherObj = o; } });
+        if (furtherObj) {
+            const dist = Math.abs(afterGap - furtherGap);
+            if (dist <= ALIGN_SNAP_THRESHOLD) {
+                const gap = (afterGap + furtherGap) / 2;
+                const delta = (lo(afterObj) - gap) - trialMax;
+                return { delta, gap, dist,
+                    segA: { nearEdge: trialMax + delta, farEdge: lo(afterObj) },
+                    segB: { nearEdge: hi(afterObj), farEdge: lo(furtherObj) } };
+            }
+        }
+    }
+    return null;
+}
+
+// Shared by move-drag and resize: given a box's final edges/centers, finds
+// EVERY stationary object (and slide bound) that lines up with any of them —
+// not just the single closest one — so multiple simultaneous alignments all
+// get a guide, exactly as a real layout tool would show them.
+function buildAlignGuides(fL, fR, fT, fB, fCx, fCy, stationary) {
+    const guides = [];
+    const vAligned = new Map(); // x-value → {yMin, yMax}
+    [fL, fR, fCx].forEach(me => {
+        stationary.forEach(o => {
+            [o.x, o.x + o.w, o.x + o.w / 2].forEach(sv => {
+                if (Math.abs(me - sv) < GUIDE_TOL) {
+                    const key = Math.round(sv * 2) / 2;
+                    if (!vAligned.has(key)) vAligned.set(key, { yMin: Infinity, yMax: -Infinity });
+                    const e = vAligned.get(key);
+                    e.yMin = Math.min(e.yMin, o.y, fT);
+                    e.yMax = Math.max(e.yMax, o.y + o.h, fB);
+                }
+            });
+        });
+        [0, SLIDE_W, SLIDE_W / 2].forEach(sv => {
+            if (Math.abs(me - sv) < GUIDE_TOL) {
+                const key = Math.round(sv * 2) / 2;
+                if (!vAligned.has(key)) vAligned.set(key, { yMin: fT, yMax: fB });
+                else { const e = vAligned.get(key); e.yMin = Math.min(e.yMin, fT); e.yMax = Math.max(e.yMax, fB); }
+            }
+        });
+    });
+    vAligned.forEach((r, val) => guides.push({ type: "v", value: val, from: r.yMin - 14, to: r.yMax + 14 }));
+
+    const hAligned = new Map();
+    [fT, fB, fCy].forEach(me => {
+        stationary.forEach(o => {
+            [o.y, o.y + o.h, o.y + o.h / 2].forEach(sv => {
+                if (Math.abs(me - sv) < GUIDE_TOL) {
+                    const key = Math.round(sv * 2) / 2;
+                    if (!hAligned.has(key)) hAligned.set(key, { xMin: Infinity, xMax: -Infinity });
+                    const e = hAligned.get(key);
+                    e.xMin = Math.min(e.xMin, o.x, fL);
+                    e.xMax = Math.max(e.xMax, o.x + o.w, fR);
+                }
+            });
+        });
+        [0, SLIDE_H, SLIDE_H / 2].forEach(sv => {
+            if (Math.abs(me - sv) < GUIDE_TOL) {
+                const key = Math.round(sv * 2) / 2;
+                if (!hAligned.has(key)) hAligned.set(key, { xMin: fL, xMax: fR });
+                else { const e = hAligned.get(key); e.xMin = Math.min(e.xMin, fL); e.xMax = Math.max(e.xMax, fR); }
+            }
+        });
+    });
+    hAligned.forEach((r, val) => guides.push({ type: "h", value: val, from: r.xMin - 14, to: r.xMax + 14 }));
+    return guides;
+}
+
+// Shared by move-drag and resize: builds the equal-spacing ("smart guide")
+// indicators for a box at its final position, with a px gap label, covering
+// both "sandwiched between two neighbours" and "extending an existing row/
+// column's established rhythm" (see findSpacingMatch).
+function buildSpacingGuides(fL, fR, fT, fB, fCx, fCy, stationary) {
+    const guides = [];
+    const h = findSpacingMatch(fL, fR, stationary, o => o.x, o => o.x + o.w);
+    if (h && h.dist < GUIDE_TOL) {
+        guides.push({ type: "spacing-h", gap: Math.round(h.gap),
+            left:  { x1: h.segA.nearEdge, x2: h.segA.farEdge, y: fCy },
+            right: { x1: h.segB.nearEdge, x2: h.segB.farEdge, y: fCy } });
+    }
+    const v = findSpacingMatch(fT, fB, stationary, o => o.y, o => o.y + o.h);
+    if (v && v.dist < GUIDE_TOL) {
+        guides.push({ type: "spacing-v", gap: Math.round(v.gap),
+            top:    { y1: v.segA.nearEdge, y2: v.segA.farEdge, x: fCx },
+            bottom: { y1: v.segB.nearEdge, y2: v.segB.farEdge, x: fCx } });
+    }
+    return guides;
+}
 
 // While dragging a selection, snap its edges/center to the edges/center of other
 // objects (and the slide bounds) so alignment guides can be shown.
 // Returns { dx, dy, guides: Array<guide> } where each guide is one of:
 //   { type:"v", value, from, to }  — vertical line segment
 //   { type:"h", value, from, to }  — horizontal line segment
-//   { type:"spacing-h", left:{x1,x2,y}, right:{x1,x2,y} }  — equal-gap indicator (horizontal)
-//   { type:"spacing-v", top:{y1,y2,x}, bottom:{y1,y2,x} }  — equal-gap indicator (vertical)
+//   { type:"spacing-h", gap, left:{x1,x2,y}, right:{x1,x2,y} }  — equal-gap indicator (horizontal)
+//   { type:"spacing-v", gap, top:{y1,y2,x}, bottom:{y1,y2,x} }  — equal-gap indicator (vertical)
 function computeAlignSnap(dx, dy, origins) {
     const movingIds = new Set(origins.map(o => o.id));
     let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
@@ -7687,7 +8919,6 @@ function computeAlignSnap(dx, dy, origins) {
     });
     if (!isFinite(left)) return { dx, dy, guides: [] };
 
-    const mW = right - left, mH = bottom - top;
     const mcx = (left + right) / 2, mcy = (top + bottom) / 2;
     const stationary = curSlide().objects.filter(o => !movingIds.has(o.id));
 
@@ -7717,135 +8948,30 @@ function computeAlignSnap(dx, dy, origins) {
         });
     });
 
-    // Equal-spacing snap (horizontal): if moving object fits between two stationary neighbours,
-    // snap it to the perfectly-centred equal-gap position when close enough.
-    let spacingSnapDx = null;
-    {
-        let leftObj = null, leftGap = Infinity;
-        stationary.forEach(o => { const g = (left + dx) - (o.x + o.w); if (g >= 0 && g < leftGap) { leftGap = g; leftObj = o; } });
-        let rightObj = null, rightGap = Infinity;
-        stationary.forEach(o => { const g = o.x - (right + dx); if (g >= 0 && g < rightGap) { rightGap = g; rightObj = o; } });
-        if (leftObj && rightObj) {
-            const span = rightObj.x - (leftObj.x + leftObj.w);
-            if (span > mW + 1) {
-                const eGap = (span - mW) / 2;
-                const targetLeft = leftObj.x + leftObj.w + eGap;
-                const spaceDx = targetLeft - left;
-                const spaceDist = Math.abs(spaceDx - dx);
-                if (spaceDist <= ALIGN_SNAP_THRESHOLD && spaceDist <= bestVDist)
-                    spacingSnapDx = spaceDx;
-            }
-        }
-    }
-
-    // Equal-spacing snap (vertical)
-    let spacingSnapDy = null;
-    {
-        let topObj = null, topGap = Infinity;
-        stationary.forEach(o => { const g = (top + dy) - (o.y + o.h); if (g >= 0 && g < topGap) { topGap = g; topObj = o; } });
-        let bottomObj = null, bottomGap = Infinity;
-        stationary.forEach(o => { const g = o.y - (bottom + dy); if (g >= 0 && g < bottomGap) { bottomGap = g; bottomObj = o; } });
-        if (topObj && bottomObj) {
-            const span = bottomObj.y - (topObj.y + topObj.h);
-            if (span > mH + 1) {
-                const eGap = (span - mH) / 2;
-                const targetTop = topObj.y + topObj.h + eGap;
-                const spaceDy = targetTop - top;
-                const spaceDist = Math.abs(spaceDy - dy);
-                if (spaceDist <= ALIGN_SNAP_THRESHOLD && spaceDist <= bestHDist)
-                    spacingSnapDy = spaceDy;
-            }
-        }
-    }
+    // Equal-spacing snap: if the moving object's trial position is sandwiched
+    // between two stationary neighbours (or continues either one's existing
+    // rhythm with a further neighbour), snap to the exact equal-gap position
+    // when that's at least as close as the best edge/center snap.
+    const spacingH = findSpacingMatch(left + dx, right + dx, stationary, o => o.x, o => o.x + o.w);
+    const spacingSnapDx = (spacingH && spacingH.dist <= ALIGN_SNAP_THRESHOLD && spacingH.dist <= bestVDist) ? dx + spacingH.delta : null;
+    const spacingV = findSpacingMatch(top + dy, bottom + dy, stationary, o => o.y, o => o.y + o.h);
+    const spacingSnapDy = (spacingV && spacingV.dist <= ALIGN_SNAP_THRESHOLD && spacingV.dist <= bestHDist) ? dy + spacingV.delta : null;
 
     const finalDx = spacingSnapDx !== null ? spacingSnapDx
                   : (bestVDist <= ALIGN_SNAP_THRESHOLD ? dx + snapDx : dx);
     const finalDy = spacingSnapDy !== null ? spacingSnapDy
                   : (bestHDist <= ALIGN_SNAP_THRESHOLD ? dy + snapDy : dy);
 
-    // Final bounding box after all snaps
-    const fL = left + finalDx, fR = right + finalDx;
-    const fT = top  + finalDy, fB = bottom + finalDy;
+    // Final bounding box after all snaps. left/right/top/bottom already have
+    // the raw (pre-snap) dx/dy baked in, so only the EXTRA nudge from
+    // snapping should be added here — adding the full finalDx/finalDy on top
+    // double-counts the raw delta and throws the guide positions off by it.
+    const fL = left + (finalDx - dx), fR = right + (finalDx - dx);
+    const fT = top  + (finalDy - dy), fB = bottom + (finalDy - dy);
     const fCx = (fL + fR) / 2, fCy = (fT + fB) / 2;
 
-    const GUIDE_TOL = 1.0; // tolerance for "aligned" after snap
-    const guides = [];
-
-    // Collect all V guides where a moving edge aligns with a stationary or slide edge
-    const vAligned = new Map(); // x-value → {yMin, yMax}
-    [[fL, "l"], [fR, "r"], [fCx, "c"]].forEach(([me]) => {
-        stationary.forEach(o => {
-            [o.x, o.x + o.w, o.x + o.w / 2].forEach(sv => {
-                if (Math.abs(me - sv) < GUIDE_TOL) {
-                    const key = Math.round(sv * 2) / 2;
-                    if (!vAligned.has(key)) vAligned.set(key, { yMin: Infinity, yMax: -Infinity });
-                    const e = vAligned.get(key);
-                    e.yMin = Math.min(e.yMin, o.y, fT);
-                    e.yMax = Math.max(e.yMax, o.y + o.h, fB);
-                }
-            });
-        });
-        [0, SLIDE_W, SLIDE_W / 2].forEach(sv => {
-            if (Math.abs(me - sv) < GUIDE_TOL) {
-                const key = Math.round(sv * 2) / 2;
-                if (!vAligned.has(key)) vAligned.set(key, { yMin: fT, yMax: fB });
-                else { const e = vAligned.get(key); e.yMin = Math.min(e.yMin, fT); e.yMax = Math.max(e.yMax, fB); }
-            }
-        });
-    });
-    vAligned.forEach((r, val) => guides.push({ type: "v", value: val, from: r.yMin - 14, to: r.yMax + 14 }));
-
-    // Collect all H guides
-    const hAligned = new Map();
-    [[fT, "t"], [fB, "b"], [fCy, "c"]].forEach(([me]) => {
-        stationary.forEach(o => {
-            [o.y, o.y + o.h, o.y + o.h / 2].forEach(sv => {
-                if (Math.abs(me - sv) < GUIDE_TOL) {
-                    const key = Math.round(sv * 2) / 2;
-                    if (!hAligned.has(key)) hAligned.set(key, { xMin: Infinity, xMax: -Infinity });
-                    const e = hAligned.get(key);
-                    e.xMin = Math.min(e.xMin, o.x, fL);
-                    e.xMax = Math.max(e.xMax, o.x + o.w, fR);
-                }
-            });
-        });
-        [0, SLIDE_H, SLIDE_H / 2].forEach(sv => {
-            if (Math.abs(me - sv) < GUIDE_TOL) {
-                const key = Math.round(sv * 2) / 2;
-                if (!hAligned.has(key)) hAligned.set(key, { xMin: fL, xMax: fR });
-                else { const e = hAligned.get(key); e.xMin = Math.min(e.xMin, fL); e.xMax = Math.max(e.xMax, fR); }
-            }
-        });
-    });
-    hAligned.forEach((r, val) => guides.push({ type: "h", value: val, from: r.xMin - 14, to: r.xMax + 14 }));
-
-    // Spacing guides (show equal-gap indicators at final position)
-    {
-        let leftObj = null, leftGap = Infinity;
-        stationary.forEach(o => { const g = fL - (o.x + o.w); if (g >= -GUIDE_TOL && g < leftGap) { leftGap = Math.max(g, 0); leftObj = o; } });
-        let rightObj = null, rightGap = Infinity;
-        stationary.forEach(o => { const g = o.x - fR; if (g >= -GUIDE_TOL && g < rightGap) { rightGap = Math.max(g, 0); rightObj = o; } });
-        if (leftObj && rightObj && Math.abs(leftGap - rightGap) < GUIDE_TOL) {
-            const midY = fCy;
-            guides.push({ type: "spacing-h",
-                left:  { x1: leftObj.x + leftObj.w, x2: fL, y: midY },
-                right: { x1: fR, x2: rightObj.x,    y: midY }
-            });
-        }
-    }
-    {
-        let topObj = null, topGap = Infinity;
-        stationary.forEach(o => { const g = fT - (o.y + o.h); if (g >= -GUIDE_TOL && g < topGap) { topGap = Math.max(g, 0); topObj = o; } });
-        let bottomObj = null, bottomGap = Infinity;
-        stationary.forEach(o => { const g = o.y - fB; if (g >= -GUIDE_TOL && g < bottomGap) { bottomGap = Math.max(g, 0); bottomObj = o; } });
-        if (topObj && bottomObj && Math.abs(topGap - bottomGap) < GUIDE_TOL) {
-            const midX = fCx;
-            guides.push({ type: "spacing-v",
-                top:    { y1: topObj.y + topObj.h, y2: fT, x: midX },
-                bottom: { y1: fB, y2: bottomObj.y,  x: midX }
-            });
-        }
-    }
+    const guides = buildAlignGuides(fL, fR, fT, fB, fCx, fCy, stationary);
+    guides.push(...buildSpacingGuides(fL, fR, fT, fB, fCx, fCy, stationary));
 
     return { dx: finalDx, dy: finalDy, guides };
 }
@@ -7853,34 +8979,77 @@ function computeAlignSnap(dx, dy, origins) {
 function drawAlignmentGuides(guides) {
     if (!guides || guides.length === 0) return;
     const COLOR = "#e8175c";
-    const addLine = (attrs) => {
+    // Keeps stroke widths, dash size, tick length, and label size constant in
+    // screen pixels at any zoom level — without this, guides drawn in slide
+    // (document) coordinates render hairline-thin when zoomed out and as
+    // thick smudges when zoomed in.
+    const inv = 1 / (currentScale || 1);
+    const sw = 1.3 * inv;
+    const haloW = sw + 2.2 * inv;
+    const dash = `${4.5 * inv},${3.5 * inv}`;
+
+    // Every guide line gets a soft white halo underneath so it stays
+    // legible over dark, busy, or colorful slide backgrounds, not just
+    // plain white ones. Main alignment lines are dashed (visually reads as
+    // "overlay guide", not real content); spacing/tick lines stay solid,
+    // like a dimension line, since they mark an exact measured boundary.
+    const addLine = (attrs, { dashed = false } = {}) => {
+        const haloEl = document.createElementNS(svgNS, "line");
+        applyAttrs(haloEl, { ...attrs, stroke: "#fff", "stroke-width": haloW, "stroke-linecap": "round", opacity: 0.85, "pointer-events": "none", class: "align-guide" });
+        if (dashed) haloEl.setAttribute("stroke-dasharray", dash);
+        svg.appendChild(haloEl);
         const el = document.createElementNS(svgNS, "line");
-        applyAttrs(el, { ...attrs, stroke: COLOR, "stroke-width": 1, "pointer-events": "none", class: "align-guide" });
+        applyAttrs(el, { ...attrs, stroke: COLOR, "stroke-width": sw, "stroke-linecap": "round", "pointer-events": "none", class: "align-guide" });
+        if (dashed) el.setAttribute("stroke-dasharray", dash);
         svg.appendChild(el);
     };
+    // A small pill-shaped px-gap label, e.g. "24px", centered at (cx, cy).
+    const addLabel = (cx, cy, text) => {
+        const g = document.createElementNS(svgNS, "g");
+        g.setAttribute("pointer-events", "none");
+        g.setAttribute("class", "align-guide");
+        svg.appendChild(g);
+        const txt = document.createElementNS(svgNS, "text");
+        applyAttrs(txt, { x: cx, y: cy, "text-anchor": "middle", "dominant-baseline": "central", "font-size": 10 * inv, "font-family": "system-ui, sans-serif", "font-weight": 600, fill: "#fff" });
+        txt.textContent = text;
+        g.appendChild(txt);
+        let bbox;
+        try { bbox = txt.getBBox(); } catch { bbox = null; }
+        if (bbox && bbox.width > 0) {
+            const padX = 4 * inv, padY = 2.5 * inv;
+            const rect = document.createElementNS(svgNS, "rect");
+            applyAttrs(rect, { x: bbox.x - padX, y: bbox.y - padY, width: bbox.width + padX * 2, height: bbox.height + padY * 2, rx: 3.5 * inv, fill: COLOR });
+            g.insertBefore(rect, txt);
+        }
+    };
+    const tick = 4 * inv, labelGap = 11 * inv, sideLabelGap = 18 * inv;
     guides.forEach(g => {
         if (g.type === "v") {
-            addLine({ x1: g.value, y1: g.from, x2: g.value, y2: g.to });
+            addLine({ x1: g.value, y1: g.from, x2: g.value, y2: g.to }, { dashed: true });
             // small tick marks at each end showing the extent
-            addLine({ x1: g.value - 4, y1: g.from + 14, x2: g.value + 4, y2: g.from + 14 });
-            addLine({ x1: g.value - 4, y1: g.to   - 14, x2: g.value + 4, y2: g.to   - 14 });
+            addLine({ x1: g.value - tick, y1: g.from + 14, x2: g.value + tick, y2: g.from + 14 });
+            addLine({ x1: g.value - tick, y1: g.to   - 14, x2: g.value + tick, y2: g.to   - 14 });
         } else if (g.type === "h") {
-            addLine({ x1: g.from, y1: g.value, x2: g.to, y2: g.value });
-            addLine({ x1: g.from + 14, y1: g.value - 4, x2: g.from + 14, y2: g.value + 4 });
-            addLine({ x1: g.to   - 14, y1: g.value - 4, x2: g.to   - 14, y2: g.value + 4 });
+            addLine({ x1: g.from, y1: g.value, x2: g.to, y2: g.value }, { dashed: true });
+            addLine({ x1: g.from + 14, y1: g.value - tick, x2: g.from + 14, y2: g.value + tick });
+            addLine({ x1: g.to   - 14, y1: g.value - tick, x2: g.to   - 14, y2: g.value + tick });
         } else if (g.type === "spacing-h") {
             [g.left, g.right].forEach(seg => {
-                if (seg.x2 - seg.x1 < 1) return;
+                const segW = seg.x2 - seg.x1;
+                if (segW < 1) return;
                 addLine({ x1: seg.x1, y1: seg.y, x2: seg.x2, y2: seg.y });
-                addLine({ x1: seg.x1, y1: seg.y - 5, x2: seg.x1, y2: seg.y + 5 });
-                addLine({ x1: seg.x2, y1: seg.y - 5, x2: seg.x2, y2: seg.y + 5 });
+                addLine({ x1: seg.x1, y1: seg.y - tick * 1.25, x2: seg.x1, y2: seg.y + tick * 1.25 });
+                addLine({ x1: seg.x2, y1: seg.y - tick * 1.25, x2: seg.x2, y2: seg.y + tick * 1.25 });
+                if (g.gap != null && segW >= 16) addLabel((seg.x1 + seg.x2) / 2, seg.y - labelGap, g.gap + "px");
             });
         } else if (g.type === "spacing-v") {
             [g.top, g.bottom].forEach(seg => {
-                if (seg.y2 - seg.y1 < 1) return;
+                const segH = seg.y2 - seg.y1;
+                if (segH < 1) return;
                 addLine({ x1: seg.x, y1: seg.y1, x2: seg.x, y2: seg.y2 });
-                addLine({ x1: seg.x - 5, y1: seg.y1, x2: seg.x + 5, y2: seg.y1 });
-                addLine({ x1: seg.x - 5, y1: seg.y2, x2: seg.x + 5, y2: seg.y2 });
+                addLine({ x1: seg.x - tick * 1.25, y1: seg.y1, x2: seg.x + tick * 1.25, y2: seg.y1 });
+                addLine({ x1: seg.x - tick * 1.25, y1: seg.y2, x2: seg.x + tick * 1.25, y2: seg.y2 });
+                if (g.gap != null && segH >= 16) addLabel(seg.x + sideLabelGap, (seg.y1 + seg.y2) / 2, g.gap + "px");
             });
         }
     });
@@ -7966,33 +9135,34 @@ window.addEventListener("pointermove", (e) => {
         return;
     }
 
-    // Crop mode drag
-    if (cropState && cropState.edge) {
+    // Crop mode drag: plain edge, corner (two edges at once — diagonal
+    // crop), or panning the whole window from inside without resizing it.
+    if (cropState && (cropState.edge || cropState.corner || cropState.pan)) {
         const obj = getObj(cropState.id);
         if (obj) {
             const pt = svgPoint(e);
             const dx = pt.x - cropState.startPt.x;
             const dy = pt.y - cropState.startPt.y;
             const sc = cropState.startCrop;
-            const crop = Object.assign({}, sc);
-            const MARGIN = 5; // minimum crop in %
-            if (cropState.edge === "top") {
-                crop.top = Math.max(0, Math.min(100 - MARGIN - sc.bottom, sc.top + (dy / obj.h) * 100));
-            } else if (cropState.edge === "bottom") {
-                crop.bottom = Math.max(0, Math.min(100 - MARGIN - sc.top, sc.bottom - (dy / obj.h) * 100));
-            } else if (cropState.edge === "left") {
-                crop.left = Math.max(0, Math.min(100 - MARGIN - sc.right, sc.left + (dx / obj.w) * 100));
-            } else if (cropState.edge === "right") {
-                crop.right = Math.max(0, Math.min(100 - MARGIN - sc.left, sc.right - (dx / obj.w) * 100));
+            let crop;
+            if (cropState.pan) {
+                const dPctX = Math.max(-sc.left, Math.min(sc.right, (dx / obj.w) * 100));
+                const dPctY = Math.max(-sc.top, Math.min(sc.bottom, (dy / obj.h) * 100));
+                crop = {
+                    left: sc.left + dPctX, right: sc.right - dPctX,
+                    top: sc.top + dPctY, bottom: sc.bottom - dPctY,
+                };
+            } else {
+                crop = Object.assign({}, sc);
+                const edgesToUpdate = cropState.corner ? CROP_CORNER_EDGES[cropState.corner] : [cropState.edge];
+                edgesToUpdate.forEach(edgeName => { crop[edgeName] = cropEdgeValue(edgeName, dx, dy, sc, obj); });
             }
-            crop.top = Math.round(crop.top); crop.bottom = Math.round(crop.bottom);
-            crop.left = Math.round(crop.left); crop.right = Math.round(crop.right);
             obj.imgCrop = crop;
             document.getElementById("picCropTop").value = crop.top;
             document.getElementById("picCropRight").value = crop.right;
             document.getElementById("picCropBottom").value = crop.bottom;
             document.getElementById("picCropLeft").value = crop.left;
-            render();
+            scheduleCropRender();
         }
         return;
     }
@@ -8053,20 +9223,21 @@ window.addEventListener("pointermove", (e) => {
                 });
             }
         });
-        render();
-        drawAlignmentGuides(snap.guides);
+        scheduleDragRender(() => { render(); drawAlignmentGuides(snap.guides); });
         return;
     }
 
     if (drag.mode === "resize") {
         const resResult = resizeObject(drag, pt);
-        render();
-        drawAlignmentGuides(resResult.guides);
-        const obj = getObj(drag.id);
-        if (obj && (obj.type === "line" || obj.type === "arrow")) {
-            const p1Handle = obj.diag ? "nw" : "sw", p2Handle = obj.diag ? "se" : "ne";
-            if (drag.handle === p1Handle || drag.handle === p2Handle) drawConnectionPoints(obj.id, pt);
-        }
+        scheduleDragRender(() => {
+            render();
+            drawAlignmentGuides(resResult.guides);
+            const obj = getObj(drag.id);
+            if (obj && (obj.type === "line" || obj.type === "arrow")) {
+                const p1Handle = obj.diag ? "nw" : "sw", p2Handle = obj.diag ? "se" : "ne";
+                if (drag.handle === p1Handle || drag.handle === p2Handle) drawConnectionPoints(obj.id, pt);
+            }
+        });
         return;
     }
 
@@ -8092,7 +9263,7 @@ window.addEventListener("pointermove", (e) => {
             obj.rowHeights[i + 1] = total - h0;
         }
         layoutTable(obj);
-        render();
+        scheduleDragRender(render);
         return;
     }
 
@@ -8111,7 +9282,15 @@ window.addEventListener("pointermove", (e) => {
             }
             obj.rotation = rotation;
         }
-        render(); renderProperties();
+        // Just render() here, not renderProperties() — every other drag mode
+        // (move, resize, adjust, vertex) only touches the canvas per tick;
+        // renderProperties() rebuilds the entire properties panel and is
+        // roughly an order of magnitude more expensive (measured ~14x for a
+        // simple shape, more for objects with many controls), which made
+        // rotating noticeably laggier than every other drag and could drop
+        // enough frames under fast mouse movement to feel like the
+        // selection itself was breaking.
+        scheduleDragRender(render);
         return;
     }
 
@@ -8170,7 +9349,7 @@ window.addEventListener("pointermove", (e) => {
                 case "waveAmp":
                     obj.waveAmp = Math.max(0.03, Math.min(0.45, (obj.h - ly) / obj.h)); break;
             }
-            render();
+            scheduleDragRender(render);
         }
         return;
     }
@@ -8183,7 +9362,7 @@ window.addEventListener("pointermove", (e) => {
                 x: obj.w ? (local.x - obj.x) / obj.w : 0,
                 y: obj.h ? (local.y - obj.y) / obj.h : 0
             };
-            render();
+            scheduleDragRender(render);
         }
         return;
     }
@@ -8222,8 +9401,10 @@ window.addEventListener("pointerup", (e) => {
         // as before, so tap-to-select keeps working.
     }
     // Crop mode: end drag
-    if (cropState && cropState.edge) {
+    if (cropState && (cropState.edge || cropState.corner || cropState.pan)) {
         cropState.edge = null;
+        cropState.corner = null;
+        cropState.pan = false;
         cropState.startPt = null;
         cropState.startCrop = null;
         pushHistory(true);
@@ -8257,6 +9438,7 @@ window.addEventListener("pointerup", (e) => {
     }
 
     if (!drag) return;
+    flushDragRender();
     const pt = svgPoint(e);
 
     if (drag.mode === "draw") {
@@ -8581,6 +9763,22 @@ function drawMarquee(x, y, w, h) {
 
 // Measures the smallest box that can show an object's text without clipping it.
 // `forWidth` (if given) is used as the wrap width when measuring required height.
+// measureTextMin() below builds, styles, and measures a real DOM element —
+// forcing two synchronous layout reflows — so calling it unthrottled on
+// every single resize pointermove tick (which can fire far faster than the
+// text's wrap width actually needs re-checking) makes resizing any
+// text-capable object measurably laggier than resizing a plain shape, most
+// noticeably on a busy slide. A sub-2px width change can't change where
+// text wraps, so it's safe to reuse the last measurement from earlier in
+// this same drag gesture instead of re-measuring from scratch.
+function measureTextMinThrottled(drag, obj, forWidth) {
+    const cache = drag._textMinCache;
+    if (cache && Math.abs(cache.forWidth - forWidth) < 2) return cache;
+    const result = measureTextMin(obj, forWidth);
+    drag._textMinCache = { forWidth, minW: result.minW, minH: result.minH };
+    return result;
+}
+
 function measureTextMin(obj, forWidth) {
     const text = obj.field ? fieldText(obj) : obj.text;
     if (!text) return { minW: 4, minH: 4 };
@@ -8590,7 +9788,7 @@ function measureTextMin(obj, forWidth) {
 
     const measurer = document.createElement("div");
     measurer.style.cssText = "position:absolute; visibility:hidden; left:-9999px; top:-9999px;";
-    measurer.style.fontFamily = `"${obj.fontFamily}", sans-serif`;
+    measurer.style.fontFamily = fontFamilyCss(obj.fontFamily);
     measurer.style.fontSize = obj.fontSize + "px";
     measurer.style.fontWeight = obj.bold ? "bold" : "normal";
     measurer.style.fontStyle = obj.italic ? "italic" : "normal";
@@ -8650,11 +9848,11 @@ function resizeObject(drag, pt) {
 
     // Text-capable objects can't shrink below the size needed to show their text
     if (TEXT_CAPABLE_TYPES.includes(obj.type)) {
-        let { minW, minH } = measureTextMin(obj, w);
+        let { minW, minH } = measureTextMinThrottled(drag, obj, w);
         if (w < minW) {
             if (drag.handle.includes("w")) x = s.x + s.w - minW;
             w = minW;
-            minH = measureTextMin(obj, w).minH;
+            minH = measureTextMinThrottled(drag, obj, w).minH;
         }
         if (h < minH) {
             if (drag.handle.includes("n")) y = s.y + s.h - minH;
@@ -8666,7 +9864,6 @@ function resizeObject(drag, pt) {
     if (h < 4 && obj.type !== "line" && obj.type !== "arrow") h = 4;
 
     // Snap the edges being dragged to nearby objects' edges/centers and the slide bounds
-    let snapV = null, snapH = null;
     const vCandidates = [0, SLIDE_W, SLIDE_W / 2];
     const hCandidates = [0, SLIDE_H, SLIDE_H / 2];
     curSlide().objects.forEach(o => {
@@ -8681,19 +9878,19 @@ function resizeObject(drag, pt) {
     });
     if (drag.handle.includes("e")) {
         let best = ALIGN_SNAP_THRESHOLD + 1;
-        vCandidates.forEach(c => { const d = Math.abs((x + w) - c); if (d < best) { best = d; w = c - x; snapV = c; } });
+        vCandidates.forEach(c => { const d = Math.abs((x + w) - c); if (d < best) { best = d; w = c - x; } });
     }
     if (drag.handle.includes("w")) {
         let best = ALIGN_SNAP_THRESHOLD + 1;
-        vCandidates.forEach(c => { const d = Math.abs(x - c); if (d < best) { best = d; w = x + w - c; x = c; snapV = c; } });
+        vCandidates.forEach(c => { const d = Math.abs(x - c); if (d < best) { best = d; w = x + w - c; x = c; } });
     }
     if (drag.handle.includes("s")) {
         let best = ALIGN_SNAP_THRESHOLD + 1;
-        hCandidates.forEach(c => { const d = Math.abs((y + h) - c); if (d < best) { best = d; h = c - y; snapH = c; } });
+        hCandidates.forEach(c => { const d = Math.abs((y + h) - c); if (d < best) { best = d; h = c - y; } });
     }
     if (drag.handle.includes("n")) {
         let best = ALIGN_SNAP_THRESHOLD + 1;
-        hCandidates.forEach(c => { const d = Math.abs(y - c); if (d < best) { best = d; h = y + h - c; y = c; snapH = c; } });
+        hCandidates.forEach(c => { const d = Math.abs(y - c); if (d < best) { best = d; h = y + h - c; y = c; } });
     }
     if (w < 4) w = 4;
     if (h < 4 && obj.type !== "line" && obj.type !== "arrow") h = 4;
@@ -8731,29 +9928,13 @@ function resizeObject(drag, pt) {
     }
 
     obj.x = x; obj.y = y; obj.w = w; obj.h = h;
-    // Build guide descriptors for drawAlignmentGuides
-    const resGuides = [];
-    if (snapV !== null) {
-        // find y-extent of all objects (including resized) that align at snapV
-        let yMin = Math.min(y, y + h), yMax = Math.max(y, y + h);
-        curSlide().objects.forEach(o => {
-            if (o.id === obj.id) return;
-            if (Math.abs(o.x - snapV) < 1 || Math.abs(o.x + o.w - snapV) < 1 || Math.abs(o.x + o.w / 2 - snapV) < 1) {
-                yMin = Math.min(yMin, o.y); yMax = Math.max(yMax, o.y + o.h);
-            }
-        });
-        resGuides.push({ type: "v", value: snapV, from: yMin - 14, to: yMax + 14 });
-    }
-    if (snapH !== null) {
-        let xMin = Math.min(x, x + w), xMax = Math.max(x, x + w);
-        curSlide().objects.forEach(o => {
-            if (o.id === obj.id) return;
-            if (Math.abs(o.y - snapH) < 1 || Math.abs(o.y + o.h - snapH) < 1 || Math.abs(o.y + o.h / 2 - snapH) < 1) {
-                xMin = Math.min(xMin, o.x); xMax = Math.max(xMax, o.x + o.w);
-            }
-        });
-        resGuides.push({ type: "h", value: snapH, from: xMin - 14, to: xMax + 14 });
-    }
+    // Guides for the resized box's final position — shares the exact same
+    // multi-guide + equal-spacing-with-labels logic move-drag uses, so resize
+    // shows every simultaneous alignment instead of just the single nearest one.
+    const stationary = curSlide().objects.filter(o => o.id !== obj.id);
+    const fL = x, fR = x + w, fT = y, fB = y + h, fCx = x + w / 2, fCy = y + h / 2;
+    const resGuides = buildAlignGuides(fL, fR, fT, fB, fCx, fCy, stationary);
+    resGuides.push(...buildSpacingGuides(fL, fR, fT, fB, fCx, fCy, stationary));
     return { guides: resGuides };
 }
 
@@ -9892,7 +11073,7 @@ function buildImageSection(obj) {
             const file = input.files[0];
             if (!file) return;
             const reader = new FileReader();
-            reader.onload = () => { obj.src = reader.result; render(); };
+            reader.onload = async () => { obj.src = await maybeCompressForIPad(reader.result); render(); };
             reader.readAsDataURL(file);
         };
         input.click();
@@ -10705,9 +11886,14 @@ function buildFillSection(obj, multi, refresh) {
     const fill = obj.fill || { type: "solid", color: "#ffffff" };
     if (fill.type === "gradient" && fill.stops) _lastGradientFill = JSON.parse(JSON.stringify(fill));
     const typeSelect = el("select");
-    [["solid", "Solid Color"], ["gradient", "Gradient"], ["parchment", "Parchment Paper"], ["emoji", "Emoji Pattern"]].forEach(([v, l]) => {
+    [["solid", "Solid Color"], ["gradient", "Gradient"]].forEach(([v, l]) => {
         typeSelect.appendChild(el("option", { value: v, text: l }));
     });
+    const patternGroup = el("optgroup", { label: "Pattern" });
+    [["parchment", "Parchment Paper"], ["emoji", "Emoji Pattern"], ["grid", "Grid"], ["dots", "Dots"], ["fabric", "Fabric"]].forEach(([v, l]) => {
+        patternGroup.appendChild(el("option", { value: v, text: l }));
+    });
+    typeSelect.appendChild(patternGroup);
     typeSelect.value = fill.type;
     typeSelect.onchange = () => {
         const type = typeSelect.value;
@@ -10718,6 +11904,9 @@ function buildFillSection(obj, multi, refresh) {
                 : { type: "gradient", gradientType: "linear", angle: 0, stops: [{ color: "#ffffff", pos: 0 }, { color: "#a4c2e0", pos: 100 }] };
             else if (type === "parchment") o.fill = { type: "parchment", color: "#e8d9b5" };
             else if (type === "emoji") o.fill = { type: "emoji", emoji: "⭐", emojiSize: 32, bgColor: "#ffffff" };
+            else if (type === "grid") o.fill = { type: "grid", bgColor: "#ffffff", lineColor: "#cccccc", gridSize: 20, lineWidth: 1 };
+            else if (type === "dots") o.fill = { type: "dots", bgColor: "#ffffff", dotColor: "#999999", dotSpacing: 20, dotSize: 3 };
+            else if (type === "fabric") o.fill = { type: "fabric", bgColor: "#eadfcd", threadColor: "#ffffff", weaveSize: 6 };
         });
         refreshFn();
     };
@@ -10821,6 +12010,54 @@ function buildFillSection(obj, multi, refresh) {
         const bgInput = makeColorPickerBtn(fill.bgColor || "#ffffff", c => applyToAll(targets, o => o.fill.bgColor = c));
         container.appendChild(row("Emoji", emojiInput));
         container.appendChild(row("Size", sizeInput, sizeVal));
+        container.appendChild(row("Background", bgInput));
+    } else if (fill.type === "grid") {
+        const sizeInput = el("input", { type: "range", min: 4, max: 100, value: fill.gridSize || 20 });
+        const sizeVal = el("span", { text: (fill.gridSize || 20) + "px", class: "small" });
+        sizeInput.oninput = () => {
+            applyToAll(targets, o => o.fill.gridSize = parseInt(sizeInput.value));
+            sizeVal.textContent = sizeInput.value + "px";
+        };
+        const widthInput = el("input", { type: "range", min: 0.5, max: 6, step: 0.5, value: fill.lineWidth || 1 });
+        const widthVal = el("span", { text: (fill.lineWidth || 1) + "px", class: "small" });
+        widthInput.oninput = () => {
+            applyToAll(targets, o => o.fill.lineWidth = parseFloat(widthInput.value));
+            widthVal.textContent = widthInput.value + "px";
+        };
+        const lineColorInput = makeColorPickerBtn(fill.lineColor || "#cccccc", c => applyToAll(targets, o => o.fill.lineColor = c));
+        const bgInput = makeColorPickerBtn(fill.bgColor || "#ffffff", c => applyToAll(targets, o => o.fill.bgColor = c));
+        container.appendChild(row("Grid Size", sizeInput, sizeVal));
+        container.appendChild(row("Line Width", widthInput, widthVal));
+        container.appendChild(row("Line Color", lineColorInput));
+        container.appendChild(row("Background", bgInput));
+    } else if (fill.type === "dots") {
+        const spacingInput = el("input", { type: "range", min: 4, max: 100, value: fill.dotSpacing || 20 });
+        const spacingVal = el("span", { text: (fill.dotSpacing || 20) + "px", class: "small" });
+        spacingInput.oninput = () => {
+            applyToAll(targets, o => o.fill.dotSpacing = parseInt(spacingInput.value));
+            spacingVal.textContent = spacingInput.value + "px";
+        };
+        const dotSizeInput = el("input", { type: "range", min: 1, max: 30, value: fill.dotSize ?? 3 });
+        const dotSizeVal = el("span", { text: (fill.dotSize ?? 3) + "px", class: "small" });
+        dotSizeInput.oninput = () => {
+            applyToAll(targets, o => o.fill.dotSize = parseInt(dotSizeInput.value));
+            dotSizeVal.textContent = dotSizeInput.value + "px";
+        };
+        const dotColorInput = makeColorPickerBtn(fill.dotColor || "#999999", c => applyToAll(targets, o => o.fill.dotColor = c));
+        const bgInput = makeColorPickerBtn(fill.bgColor || "#ffffff", c => applyToAll(targets, o => o.fill.bgColor = c));
+        container.appendChild(row("Spacing", spacingInput, spacingVal));
+        container.appendChild(row("Dot Size", dotSizeInput, dotSizeVal));
+        container.appendChild(row("Dot Color", dotColorInput));
+        container.appendChild(row("Background", bgInput));
+    } else if (fill.type === "fabric") {
+        const weaveInput = el("input", { type: "range", min: 3, max: 20, value: fill.weaveSize || 6 });
+        const weaveVal = el("span", { text: (fill.weaveSize || 6) + "px", class: "small" });
+        weaveInput.oninput = () => {
+            applyToAll(targets, o => o.fill.weaveSize = parseInt(weaveInput.value));
+            weaveVal.textContent = weaveInput.value + "px";
+        };
+        const bgInput = makeColorPickerBtn(fill.bgColor || "#eadfcd", c => applyToAll(targets, o => o.fill.bgColor = c));
+        container.appendChild(row("Weave Size", weaveInput, weaveVal));
         container.appendChild(row("Background", bgInput));
     }
 
@@ -11798,10 +13035,87 @@ document.querySelectorAll(".pic-recolor-opt[data-opacity]").forEach(btn => {
     });
 });
 
-// ---- Manage: Compress (no-op toast) ----
+// ---- Manage: Compress (iPad only, on by default) ----
+// Inserting a picture only shrinks how big it's DISPLAYED — obj.src still
+// holds the original file's full pixel data (a phone/iPad photo is routinely
+// 3000-4000px+ on a side), and the browser has to decode/composite every one
+// of those pixels on every repaint regardless of how small it's drawn. That
+// makes dragging a slide full of full-resolution photos noticeably heavier
+// than it needs to be — but only actually matters on an iPad's weaker GPU,
+// so on a laptop/desktop this is a complete no-op: pictures are stored at
+// full quality exactly as before, no toggle, nothing to opt into.
+const COMPRESS_MAX_DIM = 1920;
+
+// iPadOS Safari has reported as desktop Safari by default (no "iPad" in the
+// UA string) since iPadOS 13 — the reliable signal is a Mac-reporting
+// platform that ALSO claims multi-touch support, since no real Mac does.
+function isIPad() {
+    return /iPad/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+let iPadAutoCompress = isIPad() ? (localStorage.getItem("ldm-ipad-autocompress") !== "off") : false;
+
+function downscaleImageSrc(src, maxDim) {
+    return new Promise((resolve) => {
+        const img = new Image();
+        img.crossOrigin = "anonymous";
+        img.onload = () => {
+            const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+            if (Math.max(w, h) <= maxDim) { resolve(null); return; } // already small enough
+            const scale = maxDim / Math.max(w, h);
+            const canvas = document.createElement("canvas");
+            canvas.width = Math.round(w * scale);
+            canvas.height = Math.round(h * scale);
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            try {
+                // PNG (lossless, keeps transparency) for formats that can carry
+                // alpha; JPEG (much smaller) only for ones that never do.
+                const isOpaqueFormat = /^data:image\/jpe?g/i.test(src) || /\.jpe?g(\?|#|$)/i.test(src);
+                resolve(isOpaqueFormat ? canvas.toDataURL("image/jpeg", 0.85) : canvas.toDataURL("image/png"));
+            } catch { resolve(null); } // CORS-tainted source; leave it as-is
+        };
+        img.onerror = () => resolve(null);
+        img.src = src;
+    });
+}
+
+// Called by every picture insert/replace path right before the data URL is
+// stored as obj.src. A plain pass-through everywhere except iPad with the
+// setting on, so it's safe to drop into any of those call sites unconditionally.
+async function maybeCompressForIPad(dataURL) {
+    if (!isIPad() || !iPadAutoCompress) return dataURL;
+    const smaller = await downscaleImageSrc(dataURL, COMPRESS_MAX_DIM);
+    return smaller || dataURL;
+}
+
+function updatePicCompressBtn() {
+    const btn = document.getElementById("picCompressBtn");
+    if (!btn) return;
+    const label = btn.querySelector(".ribbon-label");
+    if (isIPad()) {
+        if (label) label.innerHTML = iPadAutoCompress ? "Auto-Compress<br>(On)" : "Auto-Compress<br>(Off)";
+        btn.title = iPadAutoCompress
+            ? "New pictures are automatically compressed for smoother performance on iPad. Click to turn off."
+            : "Automatic picture compression is off. Click to turn back on.";
+        btn.classList.toggle("active", iPadAutoCompress);
+    } else {
+        if (label) label.innerHTML = "Compress<br>Pictures";
+        btn.title = "Compress Pictures";
+        btn.classList.remove("active");
+    }
+}
+updatePicCompressBtn();
+
 document.getElementById("picCompressBtn").addEventListener("click", () => {
     closePicMenus();
-    alert("Compress Pictures: Images in this editor are already stored at their original quality.");
+    if (!isIPad()) {
+        alert("Compress Pictures: Images in this editor are already stored at their original quality.");
+        return;
+    }
+    iPadAutoCompress = !iPadAutoCompress;
+    localStorage.setItem("ldm-ipad-autocompress", iPadAutoCompress ? "on" : "off");
+    updatePicCompressBtn();
 });
 
 // ---- Manage: Change Picture ----
@@ -11817,9 +13131,10 @@ picChangeInput.addEventListener("change", () => {
     const file = picChangeInput.files[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (ev) => {
+    reader.onload = async (ev) => {
+        const src = await maybeCompressForIPad(ev.target.result);
         applyToPicTargets(o => {
-            o.src = ev.target.result;
+            o.src = src;
             delete o.imgCrop;
         });
     };
@@ -14141,7 +15456,7 @@ function renderFormatBgPanel() {
     formatBgDropdownMenu.appendChild(buildSlideBackgroundSection(renderFormatBgPanel));
     renderProperties();
 }
-document.getElementById("formatBgDropdownBtn").addEventListener("click", renderFormatBgPanel);
+formatBgDropdownMenu.addEventListener("dropdown-opening", renderFormatBgPanel);
 renderFormatBgPanel();
 
 // ============ Zoom controls ============
@@ -14164,7 +15479,25 @@ function scrollToSelection() {
 document.getElementById("zoomInBtn").onclick = () => { state.zoom = Math.min(20, Math.round((state.zoom * 1.001) * 100000) / 100000); applyZoom(); scrollToSelection(); };
 document.getElementById("zoomOutBtn").onclick = () => { state.zoom = Math.max(0.05, Math.round((state.zoom / 1.001) * 100000) / 100000); applyZoom(); scrollToSelection(); };
 document.getElementById("zoomResetBtn").onclick = () => { state.zoom = 1; applyZoom(); scrollToSelection(); };
-document.getElementById("zoomSlider").oninput = (e) => { state.zoom = e.target.value / 100; applyZoom(); scrollToSelection(); };
+// Dragging the slider fires `input` many times a second — calling
+// scrollToSelection()'s smooth-scroll on every single one would cancel and
+// restart that animation dozens of times a second (a new target every tick),
+// which is exactly the "shaky" zoom the slider used to have. Instead this
+// captures the anchor (selection center, or whatever's currently centered)
+// once at the start of the drag and instantly re-centers on it every tick —
+// the same technique the wheel/pinch live preview already uses — so the
+// view glides toward the target as ONE continuous motion with no animation
+// fighting itself, and there's nothing left to "settle" once the drag ends.
+let _sliderZooming = false;
+let _sliderZoomEndTimer = null;
+document.getElementById("zoomSlider").oninput = (e) => {
+    state.zoom = e.target.value / 100;
+    if (!_sliderZooming) { _sliderZooming = true; captureZoomAnchor(); }
+    applyZoom();
+    scrollToZoomAnchor(currentScale);
+    clearTimeout(_sliderZoomEndTimer);
+    _sliderZoomEndTimer = setTimeout(() => { _sliderZooming = false; }, 400);
+};
 
 // Trackpad pinch-zoom / Ctrl+scroll-wheel zoom.
 // Preview: CSS transform (GPU compositor, zero layout cost).
@@ -14172,6 +15505,54 @@ document.getElementById("zoomSlider").oninput = (e) => { state.zoom = e.target.v
 let _zoomDebounce = null;
 let _zoomBaseW = null; // canvasWrap width at the moment the gesture started
 let _zoomBaseH = null;
+let _zoomAnchorSlideX = null; // zoom anchor, in SLIDE coordinates (not pixels — stays valid as scale changes mid-gesture)
+let _zoomAnchorSlideY = null;
+let _zoomStartScale = null; // currentScale at the moment the gesture started
+
+// The current selection's center, in slide coordinates — or null if nothing
+// is selected. Used as the zoom anchor so that when something is selected,
+// zooming smoothly homes in on it continuously as a single motion, instead
+// of zooming around the viewport center and then separately (and jarringly)
+// animating over to the selection afterward.
+function selectionCenterSlideXY() {
+    if (!state.selection.length) return null;
+    const objs = state.selection.map(id => curSlide().objects.find(o => o.id === id)).filter(Boolean);
+    if (!objs.length) return null;
+    const minX = Math.min(...objs.map(o => o.x)), maxX = Math.max(...objs.map(o => o.x + o.w));
+    const minY = Math.min(...objs.map(o => o.y)), maxY = Math.max(...objs.map(o => o.y + o.h));
+    return { x: (minX + maxX) / 2, y: (minY + maxY) / 2 };
+}
+
+// canvasWrap always resizes from its own fixed top-left corner (that's just
+// how CSS width/height changes work), and applyZoom() never touches scroll
+// position — so without this, the instant the gesture settles and the live
+// preview's transform is cleared, the view snaps back to whatever the old
+// scroll position shows against the newly (top-left-anchored) resized
+// content, undoing any anchoring the preview appeared to have. The fix is to
+// explicitly drive scrollLeft/scrollTop every tick (and once more right after
+// the commit) so a chosen slide-space point stays under the viewport center
+// throughout. When something is selected, that point is the selection's
+// center (captured once per gesture, same as everything else here) — when
+// nothing is selected, it falls back to whatever's currently centered.
+function captureZoomAnchor() {
+    _zoomStartScale = currentScale;
+    const selAnchor = selectionCenterSlideXY();
+    if (selAnchor) {
+        _zoomAnchorSlideX = selAnchor.x;
+        _zoomAnchorSlideY = selAnchor.y;
+        return;
+    }
+    const pad = 16;
+    _zoomAnchorSlideX = (canvasArea.scrollLeft + canvasArea.clientWidth / 2 - pad) / currentScale - CANVAS_MARGIN;
+    _zoomAnchorSlideY = (canvasArea.scrollTop + canvasArea.clientHeight / 2 - pad) / currentScale - CANVAS_MARGIN;
+}
+function scrollToZoomAnchor(previewScale) {
+    const pad = 16;
+    const px = (_zoomAnchorSlideX + CANVAS_MARGIN) * previewScale + pad;
+    const py = (_zoomAnchorSlideY + CANVAS_MARGIN) * previewScale + pad;
+    canvasArea.scrollLeft = px - canvasArea.clientWidth / 2;
+    canvasArea.scrollTop = py - canvasArea.clientHeight / 2;
+}
 
 canvasArea.addEventListener("wheel", (e) => {
     if (!e.ctrlKey) return;
@@ -14180,10 +15561,11 @@ canvasArea.addEventListener("wheel", (e) => {
     const factor = Math.exp(-e.deltaY * 0.015);
     state.zoom = Math.min(20, Math.max(0.05, state.zoom * factor));
 
-    // Capture base dimensions once per gesture (before any transform has been applied)
+    // Capture base dimensions and the zoom anchor once per gesture (before any transform has been applied)
     if (_zoomBaseW === null) {
         _zoomBaseW = parseFloat(canvasWrap.style.width)  || canvasWrap.offsetWidth;
         _zoomBaseH = parseFloat(canvasWrap.style.height) || canvasWrap.offsetHeight;
+        captureZoomAnchor();
     }
 
     // CSS transform preview — pure GPU operation, no layout recalculation
@@ -14195,15 +15577,25 @@ canvasArea.addEventListener("wheel", (e) => {
     canvasWrap.style.width  = _zoomBaseW  * ratio + "px";
     canvasWrap.style.height = _zoomBaseH * ratio + "px";
 
+    // Keep the anchor point visually fixed under the viewport center as the
+    // box grows/shrinks (both resize and transform are top-left-anchored, so
+    // this scroll correction is what actually produces the "zoom into the
+    // center" feel — the transform alone can't do it).
+    scrollToZoomAnchor(_zoomStartScale * ratio);
+
     document.getElementById("zoomLevel").textContent = Math.round(state.zoom * 100) + "%";
     document.getElementById("zoomSlider").value = Math.round(state.zoom * 100);
 
-    // Commit: re-render at true size once the gesture settles
+    // Commit: re-render at true size once the gesture settles. No separate
+    // scrollToSelection() needed — the anchor tracked throughout the gesture
+    // already IS the selection's center when one exists, so this just locks
+    // in that exact same position instead of animating to it afterward.
     clearTimeout(_zoomDebounce);
     _zoomDebounce = setTimeout(() => {
         _zoomBaseW = null;
         _zoomBaseH = null;
         applyZoom();
+        scrollToZoomAnchor(currentScale);
     }, 120);
 }, { passive: false });
 
@@ -14213,7 +15605,7 @@ document.getElementById("redoBtn").onclick = redo;
 
 // ============ Save / Load project ============
 function projectData() {
-    return JSON.stringify({ slides: state.slides, current: state.current, slideW: SLIDE_W, slideH: SLIDE_H });
+    return JSON.stringify({ slides: state.slides, sections: state.sections, current: state.current, slideW: SLIDE_W, slideH: SLIDE_H });
 }
 
 // Browsers rename re-downloaded files to avoid clobbering an existing one in
@@ -14340,6 +15732,7 @@ function applyProjectData(data) {
     if (!Array.isArray(data.slides) || !data.slides.length) throw new Error("file has no slides");
     pushHistory(true);
     state.slides = data.slides;
+    state.sections = Array.isArray(data.sections) ? data.sections : [];
     state.current = Math.min(data.current || 0, state.slides.length - 1);
     state.selection = [];
     SLIDE_W = data.slideW || 960; SLIDE_H = data.slideH || 540;
@@ -14401,7 +15794,12 @@ function buildSlideSvgString(slide, slideIndex = state.current) {
     wrapper.setAttribute("viewBox", `0 0 ${SLIDE_W} ${SLIDE_H}`);
     wrapper.setAttribute("width", SLIDE_W);
     wrapper.setAttribute("height", SLIDE_H);
-    wrapper.setAttribute("style", "overflow: hidden");
+    // Deliberately no overflow:hidden style here — combined with the
+    // clipPath below (which already clips content to the slide bounds on
+    // its own), Chrome's print/PDF rasterizer silently drops pattern-filled
+    // shapes that use plain geometry (grid lines, dots) instead of a filter,
+    // even though they render fine on-screen. The clipPath alone provides
+    // the exact same "hide off-slide content" behavior without that bug.
     const defs = document.createElementNS(svgNS, "defs");
     wrapper.appendChild(defs);
     // Clip everything to the slide bounds so objects dragged partially off
@@ -14753,6 +16151,8 @@ function objectToTikz(obj, imageFiles, slideIndex = state.current) {
         if (obj.fill.type === "solid" && obj.fill.color !== "none") fillC = colorName(obj.fill.color);
         else if (obj.fill.type === "parchment") fillC = colorName(obj.fill.color || "#e8d9b5");
         else if (obj.fill.type === "emoji") fillC = colorName(obj.fill.bgColor || "#ffffff");
+        else if (obj.fill.type === "grid" || obj.fill.type === "dots") fillC = colorName(obj.fill.bgColor || "#ffffff");
+        else if (obj.fill.type === "fabric") fillC = colorName(obj.fill.bgColor || "#eadfcd");
     }
     const strokeC = (obj.stroke && solidColorOf(obj.stroke) !== "none") ? colorName(solidColorOf(obj.stroke)) : null;
     const lw = (strokeC && obj.stroke) ? `line width=${(obj.stroke.width * 0.35).toFixed(2)}pt` : "";
@@ -14788,7 +16188,7 @@ function objectToTikz(obj, imageFiles, slideIndex = state.current) {
         if (opacityOpt) gradOpts.push(opacityOpt);
         gradientNote = `% NOTE: gradient approximated with two-color shading (full multi-stop gradients are not natively supported by TikZ)`;
     }
-    if (obj.fill && (obj.fill.type === "parchment" || obj.fill.type === "emoji")) {
+    if (obj.fill && (obj.fill.type === "parchment" || obj.fill.type === "emoji" || obj.fill.type === "grid" || obj.fill.type === "dots" || obj.fill.type === "fabric")) {
         gradientNote = `% NOTE: ${obj.fill.type} fill approximated as a solid color (recreate the texture/pattern manually in LaTeX if needed)`;
     }
 
@@ -15121,6 +16521,12 @@ function objectToTikz(obj, imageFiles, slideIndex = state.current) {
             lines.push(`\\node at (${cmX(cx)},${cmY(cy)}) {${label}: ${escapeLatex(obj.fileName || "")}};`);
             break;
         }
+        default:
+            if (EXTRA_SHAPE_DEFS[obj.type]) {
+                const pts = getShapePoints(obj);
+                if (gradientNote) lines.push(gradientNote);
+                lines.push(`${cmd}${optsStr} ${pts.map(p => `(${cmX(p[0])},${cmY(p[1])})`).join(" -- ")} -- cycle;`);
+            }
     }
 
     // typed text label on a shape (rect, ellipse, etc.)
@@ -15492,22 +16898,60 @@ function renderSlideShowSlide() {
     });
 }
 
+const ssCounterEl      = document.getElementById("ssCounter");
+const ssProgressFillEl = document.getElementById("ssProgressFill");
+const ssEndScreenEl    = document.getElementById("ssEndScreen");
+
+function updateSsChrome() {
+    const total = state.slides.length;
+    if (ssCounterEl) ssCounterEl.textContent = `${slideShowIndex + 1} / ${total}`;
+    if (ssProgressFillEl) ssProgressFillEl.style.width = total > 1 ? `${(slideShowIndex / (total - 1)) * 100}%` : "100%";
+    const prevBtn = document.getElementById("slideShowPrevBtn");
+    if (prevBtn) prevBtn.disabled = slideShowIndex <= 0;
+}
+
+// Controls (bottom bar + cursor) fade in on activity and auto-hide after a
+// few seconds of idle time, like a real presentation remote/video player.
+let ssIdleTimer = null;
+function ssShowControls() {
+    slideShowOverlay.classList.add("ss-controls-visible");
+    clearTimeout(ssIdleTimer);
+    ssIdleTimer = setTimeout(() => {
+        slideShowOverlay.classList.remove("ss-controls-visible");
+    }, 2800);
+}
+
 function startSlideShow() {
     if (!state.slides.length) return;
     slideShowIndex = state.current;
+    slideShowOverlay.classList.remove("ss-ended");
     renderSlideShowSlide();
-    slideShowOverlay.classList.add("active");
+    updateSsChrome();
+    slideShowOverlay.classList.add("active", "ss-opening");
+    setTimeout(() => slideShowOverlay.classList.remove("ss-opening"), 500);
     if (slideShowOverlay.requestFullscreen) slideShowOverlay.requestFullscreen().catch(() => {});
+    ssShowControls();
 }
 
 function exitSlideShow() {
-    slideShowOverlay.classList.remove("active");
+    slideShowOverlay.classList.remove("active", "ss-ended", "ss-controls-visible", "ss-opening");
+    clearTimeout(ssIdleTimer);
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
 }
 
 const slideShowBgStage = document.getElementById("slideShowBgStage");
 
 function slideShowGo(delta) {
+    if (slideShowOverlay.classList.contains("ss-ended")) {
+        // Stepping backward from the end screen returns to the last slide.
+        if (delta < 0) {
+            slideShowOverlay.classList.remove("ss-ended");
+            slideShowIndex = state.slides.length - 1;
+            renderSlideShowSlide();
+            updateSsChrome();
+        }
+        return;
+    }
     if (delta > 0 && _ssAnimStep < _ssAnimQueue.length) {
         // Trigger next animation step instead of advancing slide
         _ssPlayStep(_ssAnimQueue[_ssAnimStep]);
@@ -15515,7 +16959,11 @@ function slideShowGo(delta) {
         return;
     }
     const next = slideShowIndex + delta;
-    if (next < 0 || next >= state.slides.length) return;
+    if (next >= state.slides.length) {
+        slideShowOverlay.classList.add("ss-ended");
+        return;
+    }
+    if (next < 0) return;
 
     // Save current content to bg stage for the transition
     if (slideShowBgStage) {
@@ -15532,6 +16980,7 @@ function slideShowGo(delta) {
 
     slideShowIndex = next;
     renderSlideShowSlide();
+    updateSsChrome();
 
     // Apply the destination slide's transition
     const trans = getSlideTransition(state.slides[slideShowIndex]);
@@ -15542,9 +16991,28 @@ document.getElementById("slideShowBtn").onclick = startSlideShow;
 document.getElementById("slideShowCloseBtn").onclick = exitSlideShow;
 document.getElementById("slideShowPrevBtn").onclick = () => slideShowGo(-1);
 document.getElementById("slideShowNextBtn").onclick = () => slideShowGo(1);
+if (ssEndScreenEl) ssEndScreenEl.onclick = exitSlideShow;
+
+// Re-entering/exiting fullscreen via this button shouldn't be treated as
+// "the user dismissed the show" by the fullscreenchange listener below.
+let ssFullscreenToggling = false;
+const ssFullscreenBtn = document.getElementById("ssFullscreenBtn");
+if (ssFullscreenBtn) ssFullscreenBtn.onclick = () => {
+    ssFullscreenToggling = true;
+    if (document.fullscreenElement) {
+        document.exitFullscreen().catch(() => {});
+    } else if (slideShowOverlay.requestFullscreen) {
+        slideShowOverlay.requestFullscreen().catch(() => {});
+    }
+    setTimeout(() => { ssFullscreenToggling = false; }, 300);
+};
 
 slideShowOverlay.addEventListener("click", (e) => {
     if (e.target === slideShowOverlay || e.target === slideShowStage) slideShowGo(1);
+});
+
+["mousemove", "mousedown", "touchstart"].forEach(evt => {
+    slideShowOverlay.addEventListener(evt, ssShowControls, { passive: true });
 });
 
 document.addEventListener("keydown", (e) => {
@@ -15553,12 +17021,18 @@ document.addEventListener("keydown", (e) => {
         return;
     }
     if (e.key === "Escape") { exitSlideShow(); return; }
+    ssShowControls();
+    if (slideShowOverlay.classList.contains("ss-ended")) {
+        if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown" || e.key === "Enter") { e.preventDefault(); exitSlideShow(); return; }
+        if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); slideShowGo(-1); return; }
+        return;
+    }
     if (e.key === "ArrowRight" || e.key === " " || e.key === "PageDown") { e.preventDefault(); slideShowGo(1); return; }
     if (e.key === "ArrowLeft" || e.key === "PageUp") { e.preventDefault(); slideShowGo(-1); return; }
 });
 
 document.addEventListener("fullscreenchange", () => {
-    if (!document.fullscreenElement && slideShowOverlay.classList.contains("active")) {
+    if (!document.fullscreenElement && slideShowOverlay.classList.contains("active") && !ssFullscreenToggling) {
         slideShowOverlay.classList.remove("active");
     }
 });
@@ -16250,6 +17724,11 @@ function ellipse(x, y, w, h, color, extra = {}) {
              fill: { type: "solid", color },
              stroke: { color: "none", width: 0, dash: "solid" }, ...extra };
 }
+function shape(type, x, y, w, h, color, extra = {}) {
+    return { type, x, y, w, h,
+             fill: { type: "solid", color },
+             stroke: { color: "none", width: 0, dash: "solid" }, ...extra };
+}
 
 // ── TEMPLATE DEFINITIONS ─────────────────────────────────────
 const TEMPLATES = [
@@ -16527,6 +18006,267 @@ const TEMPLATES = [
             },
         ]
     },
+
+    // 7. Tech Gradient -------------------------------------------
+    {
+        name: "Tech Gradient",
+        sub: "Vibrant · Startup",
+        slides: [
+            {
+                fill: { type: "gradient", gradientType: "linear", angle: 125,
+                        stops: [{ pos: 0, color: "#3a0ca3" }, { pos: 100, color: "#f72585" }] },
+                objects: [
+                    shape("triangle", 660, -70, 360, 360, "#ffffff", { opacity: 8 }),
+                    ellipse(-110, 300, 360, 360, "#ffffff", { opacity: 8 }),
+                    shape("diamond", 760, 250, 42, 42, "#ffd166", { opacity: 88 }),
+                    shape("triangle", 770, 360, 56, 56, "#4cc9f0", { opacity: 85 }),
+                    { type: "roundrect", x: 70, y: 162, w: 520, h: 196,
+                      fill: { type: "solid", color: "rgba(255,255,255,0.14)" },
+                      stroke: { color: "rgba(255,255,255,0.45)", width: 1.5, dash: "solid" }, cornerRadius: 0.1 },
+                    tx("text", 92, 182, 470, 80, "Tech Gradient",
+                        { fontFamily: "Arial", fontSize: 44, fontColor: "#ffffff", bold: true }),
+                    tx("text", 92, 264, 460, 36, "Here is where your presentation begins",
+                        { fontFamily: "Arial", fontSize: 16, fontColor: "#ffe1ef" }),
+                    tx("text", 92, 304, 400, 28, "Product · Pitch · 2024",
+                        { fontFamily: "Arial", fontSize: 13, fontColor: "#ffd6ea" }),
+                ]
+            },
+            {
+                fill: { type: "solid", color: "#f7f5fb" },
+                objects: [
+                    rect(0, 0, W, 80, "#3a0ca3", { fill: { type: "gradient", gradientType: "linear", angle: 0,
+                        stops: [{ pos: 0, color: "#3a0ca3" }, { pos: 100, color: "#f72585" }] } }),
+                    tx("text", 30, 18, 700, 44, "Slide Title",
+                        { fontFamily: "Arial", fontSize: 26, fontColor: "#ffffff", bold: true }),
+                    rect(0, 80, W, 3, "#f72585"),
+                    tx("text", 30, 104, 560, 360, "Main content goes here.\n\n• Key point one\n• Key point two\n• Key point three",
+                        { fontFamily: "Arial", fontSize: 18, fontColor: "#2b2140" }),
+                    shape("diamond", 760, 380, 200, 200, "#3a0ca3", { opacity: 7 }),
+                    rect(640, 150, 280, 300, "#ffffff", { stroke: { color: "#e7defa", width: 1, dash: "solid" } }),
+                    tx("text", 660, 270, 240, 60, "Chart or image\nplaceholder",
+                        { fontFamily: "Arial", fontSize: 15, fontColor: "#9a8fc2", align: "center" }),
+                ]
+            },
+        ]
+    },
+
+    // 8. Autumn Earth ----------------------------------------------
+    {
+        name: "Autumn Earth",
+        sub: "Warm · Organic",
+        slides: [
+            {
+                fill: { type: "solid", color: "#fbf1e4" },
+                objects: [
+                    ellipse(720, -40, 260, 260, "#c1502e", { opacity: 75 }),
+                    ellipse(855, 120, 150, 150, "#e0a94a", { opacity: 80 }),
+                    ellipse(-60, 380, 240, 240, "#7d8c4c", { opacity: 70 }),
+                    ellipse(60, 460, 130, 130, "#8a5a36", { opacity: 65 }),
+                    ellipse(630, 390, 70, 70, "#e0a94a", { opacity: 60 }),
+                    rect(60, 225, 4, 90, "#c1502e"),
+                    tx("text", 84, 205, 620, 70, "Autumn Earth",
+                        { fontFamily: "Georgia", fontSize: 42, fontColor: "#4a2f1f", bold: true }),
+                    tx("text", 84, 282, 560, 36, "Here is where your presentation begins",
+                        { fontFamily: "Georgia", fontSize: 16, fontColor: "#7d5a3c", italic: true }),
+                    rect(84, 332, 110, 2, "#c1502e"),
+                    tx("text", 84, 346, 400, 26, "Studio · 2024",
+                        { fontFamily: "Arial", fontSize: 12, fontColor: "#a9875f" }),
+                ]
+            },
+            {
+                fill: { type: "solid", color: "#fbf1e4" },
+                objects: [
+                    rect(0, 0, W, 76, "#c1502e"),
+                    tx("text", 30, 16, 700, 44, "Slide Title",
+                        { fontFamily: "Georgia", fontSize: 26, fontColor: "#fff7ee" }),
+                    rect(0, 76, W, 3, "#e0a94a"),
+                    tx("text", 30, 100, 560, 360, "Main content goes here.\n\n• Key point one\n• Key point two\n• Key point three",
+                        { fontFamily: "Georgia", fontSize: 18, fontColor: "#4a2f1f" }),
+                    ellipse(700, 380, 220, 220, "#7d8c4c", { opacity: 14 }),
+                    rect(630, 100, 300, 360, "#f3e3cb", { stroke: { color: "#e0a94a", width: 1, dash: "solid" } }),
+                    tx("text", 650, 230, 260, 100, "Notes or visual\nplaceholder",
+                        { fontFamily: "Georgia", fontSize: 15, fontColor: "#a9875f", align: "center", italic: true }),
+                ]
+            },
+        ]
+    },
+
+    // 9. Corporate Navy & Gold --------------------------------------
+    {
+        name: "Corporate Navy",
+        sub: "Formal · Executive",
+        slides: [
+            {
+                fill: { type: "solid", color: "#0b1f3a" },
+                objects: [
+                    shape("line", 40, 40, 70, 0, "none", { stroke: { color: "#d4af6a", width: 2, dash: "solid" } }),
+                    shape("line", 40, 40, 0, 70, "none", { stroke: { color: "#d4af6a", width: 2, dash: "solid" } }),
+                    shape("line", 850, 500, 70, 0, "none", { stroke: { color: "#d4af6a", width: 2, dash: "solid" } }),
+                    shape("line", 920, 430, 0, 70, "none", { stroke: { color: "#d4af6a", width: 2, dash: "solid" } }),
+                    rect(60, 232, 4, 110, "#d4af6a"),
+                    tx("text", 84, 210, 700, 70, "Corporate Navy",
+                        { fontFamily: "Georgia", fontSize: 42, fontColor: "#ffffff", bold: true }),
+                    tx("text", 84, 286, 600, 36, "Here is where your presentation begins",
+                        { fontFamily: "Arial", fontSize: 16, fontColor: "#aebbd1" }),
+                    rect(84, 336, 110, 1, "#d4af6a"),
+                    tx("text", 84, 350, 400, 26, "Company · 2024",
+                        { fontFamily: "Arial", fontSize: 12, fontColor: "#728098" }),
+                    shape("diamond", 760, 250, 40, 40, "#d4af6a", { opacity: 85 }),
+                ]
+            },
+            {
+                fill: { type: "solid", color: "#ffffff" },
+                objects: [
+                    rect(0, 0, W, 76, "#0b1f3a"),
+                    tx("text", 30, 16, 700, 44, "Slide Title",
+                        { fontFamily: "Georgia", fontSize: 26, fontColor: "#ffffff" }),
+                    rect(0, 76, W, 3, "#d4af6a"),
+                    tx("text", 30, 100, 560, 360, "Main content goes here.\n\n• Key point one\n• Key point two\n• Key point three",
+                        { fontFamily: "Arial", fontSize: 18, fontColor: "#1c2a3a" }),
+                    rect(630, 100, 300, 360, "#0b1f3a"),
+                    rect(630, 100, 300, 4, "#d4af6a"),
+                    tx("text", 654, 130, 252, 40, "Key Data",
+                        { fontFamily: "Georgia", fontSize: 18, fontColor: "#d4af6a", bold: true }),
+                    rect(654, 168, 60, 1, "#d4af6a"),
+                    tx("text", 654, 184, 252, 240, "Add charts, figures, or supporting notes here.",
+                        { fontFamily: "Arial", fontSize: 14, fontColor: "#c7cedb" }),
+                ]
+            },
+        ]
+    },
+
+    // 10. Bold Geometric ---------------------------------------------
+    {
+        name: "Bold Geometric",
+        sub: "Modern · Creative",
+        slides: [
+            {
+                fill: { type: "solid", color: "#ffffff" },
+                objects: [
+                    shape("triangle", 620, -80, 380, 380, "#0fa3a3", { opacity: 90 }),
+                    shape("hexagon", -100, 300, 320, 320, "#ef6f6c", { opacity: 88 }),
+                    shape("diamond", 770, 330, 130, 130, "#f4b942", { opacity: 90 }),
+                    shape("triangle", 60, 420, 70, 70, "#0fa3a3", { opacity: 30 }),
+                    rect(70, 235, 5, 90, "#1a1a1a"),
+                    tx("text", 96, 215, 480, 70, "Bold Geometric",
+                        { fontFamily: "Arial", fontSize: 40, fontColor: "#1a1a1a", bold: true }),
+                    tx("text", 96, 290, 440, 36, "Here is where your presentation begins",
+                        { fontFamily: "Arial", fontSize: 16, fontColor: "#555555" }),
+                    rect(96, 338, 100, 3, "#0fa3a3"),
+                ]
+            },
+            {
+                fill: { type: "solid", color: "#ffffff" },
+                objects: [
+                    rect(0, 0, 140, H, "#1a1a1a"),
+                    shape("diamond", 30, 40, 70, 70, "#f4b942"),
+                    tx("text", 20, 460, 110, 28, "01",
+                        { fontFamily: "Arial", fontSize: 22, fontColor: "#ffffff", bold: true, align: "center" }),
+                    tx("text", 170, 40, 700, 50, "Slide Title",
+                        { fontFamily: "Arial", fontSize: 30, fontColor: "#1a1a1a", bold: true }),
+                    rect(170, 98, 90, 4, "#ef6f6c"),
+                    tx("text", 170, 124, 720, 360, "Main content goes here.\n\n• Key point one\n• Key point two\n• Key point three",
+                        { fontFamily: "Arial", fontSize: 18, fontColor: "#333333" }),
+                    shape("triangle", 820, 380, 90, 90, "#0fa3a3", { opacity: 18 }),
+                ]
+            },
+        ]
+    },
+
+    // 11. Soft Blush -----------------------------------------------
+    {
+        name: "Soft Blush",
+        sub: "Elegant · Pastel",
+        slides: [
+            {
+                fill: { type: "gradient", gradientType: "linear", angle: 160,
+                        stops: [{ pos: 0, color: "#fdf2f4" }, { pos: 100, color: "#f6e6ea" }] },
+                objects: [
+                    ellipse(770, 60, 130, 130, "none", { stroke: { color: "#e3b8c4", width: 1.5, dash: "solid" } }),
+                    ellipse(820, 40, 50, 50, "#f3cdd6", { opacity: 70 }),
+                    ellipse(40, 420, 90, 90, "none", { stroke: { color: "#9bab8e", width: 1.5, dash: "solid" } }),
+                    tx("text", 0, 200, W, 70, "Soft Blush",
+                        { fontFamily: "Georgia", fontSize: 44, fontColor: "#b46a7c", align: "center", italic: true }),
+                    rect(430, 278, 100, 1, "#9bab8e"),
+                    tx("text", 0, 296, W, 36, "Here is where your presentation begins",
+                        { fontFamily: "Georgia", fontSize: 15, fontColor: "#7c9070", align: "center", italic: true }),
+                    tx("text", 0, 340, W, 26, "Studio · 2024",
+                        { fontFamily: "Arial", fontSize: 12, fontColor: "#c9a3ad", align: "center" }),
+                ]
+            },
+            {
+                fill: { type: "solid", color: "#fffaf9" },
+                objects: [
+                    rect(0, 0, W, 4, "#f3cdd6"),
+                    tx("text", 40, 30, 700, 46, "Slide Title",
+                        { fontFamily: "Georgia", fontSize: 28, fontColor: "#b46a7c", italic: true }),
+                    rect(40, 86, 90, 1.5, "#9bab8e"),
+                    tx("text", 40, 110, 560, 360, "Main content goes here.\n\n• Key point one\n• Key point two\n• Key point three",
+                        { fontFamily: "Georgia", fontSize: 18, fontColor: "#4a3a3e" }),
+                    ellipse(700, 130, 40, 40, "#f3cdd6", { opacity: 60 }),
+                    rect(630, 110, 290, 340, "none", { stroke: { color: "#e3b8c4", width: 1.5, dash: "solid" } }),
+                    tx("text", 650, 250, 250, 60, "Notes or image\nplaceholder",
+                        { fontFamily: "Georgia", fontSize: 15, fontColor: "#c9a3ad", align: "center", italic: true }),
+                ]
+            },
+        ]
+    },
+
+    // 12. Pitch Deck Stats -------------------------------------------
+    {
+        name: "Pitch Deck Stats",
+        sub: "Bold · Metrics",
+        slides: [
+            {
+                fill: { type: "solid", color: "#ffffff" },
+                objects: [
+                    rect(0, 0, W, 10, "#ff4d4d"),
+                    tx("text", 60, 90, 700, 70, "Pitch Deck Stats",
+                        { fontFamily: "Arial", fontSize: 42, fontColor: "#1a1a1a", bold: true }),
+                    tx("text", 60, 162, 600, 36, "Here is where your presentation begins",
+                        { fontFamily: "Arial", fontSize: 16, fontColor: "#666666" }),
+                    rect(60, 206, 90, 4, "#ff4d4d"),
+                    ...[0,1,2].map(i => {
+                        const labels = ["120%","4.8M","35"];
+                        const subs = ["Growth YoY","Users Reached","Countries"];
+                        const colors = ["#ff4d4d","#118ab2","#06d6a0"];
+                        const x2 = 60 + i * 300;
+                        return [
+                            rect(x2, 250, 4, 100, colors[i]),
+                            tx("text", x2 + 18, 260, 240, 60, labels[i],
+                                { fontFamily: "Arial", fontSize: 40, fontColor: colors[i], bold: true }),
+                            tx("text", x2 + 18, 326, 240, 30, subs[i],
+                                { fontFamily: "Arial", fontSize: 14, fontColor: "#777777" }),
+                        ];
+                    }).flat(),
+                ]
+            },
+            {
+                fill: { type: "solid", color: "#f7f7f9" },
+                objects: [
+                    rect(0, 0, W, 80, "#1a1a1a"),
+                    tx("text", 30, 18, 700, 44, "Key Metrics",
+                        { fontFamily: "Arial", fontSize: 26, fontColor: "#ffffff", bold: true }),
+                    ...[0,1,2,3].map(i => {
+                        const colors = ["#ff4d4d","#118ab2","#06d6a0","#ffb703"];
+                        const numbers = ["87%","12k","4.2x","19"];
+                        const labels = ["Retention","Signups","ROI","Markets"];
+                        const x2 = 30 + i * 220;
+                        return [
+                            rect(x2, 120, 205, 300, "#ffffff", { stroke: { color: "#e5e5e5", width: 1, dash: "solid" } }),
+                            rect(x2, 120, 205, 6, colors[i]),
+                            tx("text", x2 + 15, 170, 175, 60, numbers[i],
+                                { fontFamily: "Arial", fontSize: 34, fontColor: colors[i], bold: true }),
+                            tx("text", x2 + 15, 232, 175, 30, labels[i],
+                                { fontFamily: "Arial", fontSize: 14, fontColor: "#555555" }),
+                            tx("text", x2 + 15, 270, 175, 130, "Short supporting detail about this metric goes here.",
+                                { fontFamily: "Arial", fontSize: 11, fontColor: "#888888" }),
+                        ];
+                    }).flat(),
+                ]
+            },
+        ]
+    },
 ];
 
 // ── Render SVG thumbnail for a template ──────────────────────
@@ -16593,10 +18333,26 @@ function renderTemplateThumbnail(template) {
             el.setAttribute("x", o.x * sx); el.setAttribute("y", o.y * sy);
             el.setAttribute("width", o.w * sx); el.setAttribute("height", o.h * sy);
             if (o.rx) el.setAttribute("rx", o.rx * sx);
+        } else if (o.type === "roundrect") {
+            el = document.createElementNS(svgNS2, "rect");
+            el.setAttribute("x", o.x * sx); el.setAttribute("y", o.y * sy);
+            el.setAttribute("width", o.w * sx); el.setAttribute("height", o.h * sy);
+            el.setAttribute("rx", Math.min(o.w*sx, o.h*sy) * (o.cornerRadius ?? 0.15));
         } else if (o.type === "ellipse") {
             el = document.createElementNS(svgNS2, "ellipse");
             el.setAttribute("cx", (o.x + o.w/2)*sx); el.setAttribute("cy", (o.y + o.h/2)*sy);
             el.setAttribute("rx", o.w/2*sx); el.setAttribute("ry", o.h/2*sy);
+        } else if (o.type === "line" || o.type === "arrow") {
+            const { p1, p2 } = lineEndpoints(o);
+            el = document.createElementNS(svgNS2, "line");
+            el.setAttribute("x1", p1.x*sx); el.setAttribute("y1", p1.y*sy);
+            el.setAttribute("x2", p2.x*sx); el.setAttribute("y2", p2.y*sy);
+        } else {
+            const pts = getShapePoints(o);
+            if (pts) {
+                el = document.createElementNS(svgNS2, "polygon");
+                el.setAttribute("points", pts.map(p => `${p[0]*sx},${p[1]*sy}`).join(" "));
+            }
         }
         if (el) {
             el.setAttribute("fill", fill);
@@ -17491,4 +19247,31 @@ function _closeLangMenu() {
 
     // Sync document lang on startup
     document.documentElement.lang = (LANGUAGES.find(l => l.code === appLanguage) || LANGUAGES[0]).bcp;
+})();
+
+// ---- Ribbon icon colour toggle ----
+// Default is plain black & white (matching every other icon set this app
+// shipped with before the coloured-by-category pass) — colour is strictly
+// opt-in, persisted once the user actually turns it on, and the whole
+// category palette in style.css is gated behind body.colored-icons so this
+// one class toggle is the only thing that needs to change at runtime.
+(function initIconColorToggle() {
+    const btn = document.getElementById("iconColorToggleBtn");
+    const label = document.getElementById("iconColorToggleLabel");
+    if (!btn || !label) return;
+    let coloredIcons = localStorage.getItem("ldm-colored-icons") === "on";
+
+    function apply() {
+        document.body.classList.toggle("colored-icons", coloredIcons);
+        btn.classList.toggle("active", coloredIcons);
+        label.textContent = coloredIcons ? "Colour Icons" : "Black & White Icons";
+        btn.title = coloredIcons ? "Switch ribbon icons back to black & white" : "Switch ribbon icons to colour";
+    }
+    apply();
+
+    btn.addEventListener("click", () => {
+        coloredIcons = !coloredIcons;
+        localStorage.setItem("ldm-colored-icons", coloredIcons ? "on" : "off");
+        apply();
+    });
 })();

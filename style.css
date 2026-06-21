@@ -992,9 +992,13 @@ body {
 .ribbon-dropdown-menu button {
     margin: 0;
 }
-#symbolDropdownMenu button {
-    width: 1.8rem;
-    font-size: 0.95rem;
+/* The base 16rem max-width is too narrow for the Slide Background panel's
+   Type/Color/Transparency row (label + select/slider naturally want ~315px),
+   which otherwise overflows the menu's own box and gets clipped at the
+   viewport edge instead of wrapping inside it. */
+#formatBgDropdownMenu {
+    width: max-content;
+    max-width: 340px;
 }
 
 /* ---------- Table grid picker ---------- */
@@ -1628,6 +1632,25 @@ body {
     border-color: #65c8d6;
     box-shadow: 0 0 0 3px rgba(101,200,214,0.25), 0 3px 8px rgba(0,0,0,0.14);
 }
+.slide-thumb.dragging {
+    /* No transition here — the drag handler sets style.transform on every
+       pointermove tick, and animating that (inherited from the base hover
+       transition above) would make the thumbnail visibly lag behind the
+       cursor instead of tracking it exactly. */
+    transition: none;
+    opacity: 0.55;
+    box-shadow: 0 8px 18px rgba(0,0,0,0.22);
+    cursor: grabbing;
+    z-index: 20;
+}
+.slide-drop-indicator {
+    height: 3px;
+    border-radius: 2px;
+    background: #2fa0b0;
+    box-shadow: 0 0 0 3px rgba(47,160,176,0.18);
+    margin: 2px 2px;
+    flex-shrink: 0;
+}
 .slide-thumb svg { width: 100%; height: 100%; display: block; }
 .slide-thumb .slide-num {
     position: absolute;
@@ -1653,6 +1676,42 @@ body {
     display: none;
 }
 .slide-thumb:hover .slide-del { display: block; }
+
+.slide-section-header {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    padding: 0.3rem 0.3rem;
+    margin-top: 0.2rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: #44505c;
+    user-select: none;
+}
+.slide-section-header:hover { background: rgba(101,200,214,0.15); }
+.slide-section-header .section-chevron {
+    flex: 0 0 auto;
+    width: 0.9em;
+    font-size: 0.65rem;
+    color: #7a8a96;
+}
+.slide-section-header .section-name {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.slide-section-header .section-count {
+    flex: 0 0 auto;
+    font-size: 0.68rem;
+    font-weight: 400;
+    color: #92a0ab;
+    background: rgba(0,0,0,0.06);
+    border-radius: 8px;
+    padding: 0 0.4rem;
+}
 
 .ghost-btn {
     margin-top: 0.5rem;
@@ -1755,6 +1814,14 @@ body {
     margin: 0 0.05rem;
 }
 .sb-spacer { flex: 1; }
+.sb-toggle-btn {
+    border: none;
+    background: none;
+    font-family: inherit;
+    cursor: pointer;
+}
+.sb-toggle-btn.active { background: rgba(255,255,255,0.16); }
+.sb-toggle-btn.active .sb-icon { opacity: 1; color: #ffd54a; }
 
 /* Language picker button */
 .sb-lang-wrap {
@@ -2613,17 +2680,25 @@ body {
     position: fixed;
     inset: 0;
     z-index: 1000;
-    background: #000;
+    background: radial-gradient(ellipse at center, #161616 0%, #000000 72%);
     align-items: center;
     justify-content: center;
+    cursor: none;
 }
 .slideshow-overlay.active { display: flex; }
+.slideshow-overlay.ss-controls-visible { cursor: default; }
+.slideshow-overlay.ss-opening .ss-stage-wrap { animation: ssStageIn 0.45s ease both; }
+@keyframes ssStageIn {
+    from { opacity: 0; transform: scale(0.97); }
+    to   { opacity: 1; transform: scale(1); }
+}
 .ss-stage-wrap {
     position: relative;
     width: 100%;
     height: 100%;
     overflow: hidden;
 }
+.slideshow-overlay.ss-ended .ss-stage-wrap { visibility: hidden; }
 .slideshow-stage {
     position: absolute;
     inset: 0;
@@ -2636,6 +2711,105 @@ body {
 .slideshow-stage svg {
     max-width: 100%;
     max-height: 100%;
+    box-shadow: 0 25px 80px -10px rgba(0,0,0,0.75);
+}
+
+/* End-of-show screen */
+.ss-end-screen {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 0.6rem;
+    background: #000;
+    color: rgba(255,255,255,0.85);
+    text-align: center;
+    cursor: default;
+}
+.slideshow-overlay.ss-ended .ss-end-screen { display: flex; }
+.ss-end-title { font-size: 1.4rem; font-weight: 600; letter-spacing: 0.01em; }
+.ss-end-sub { font-size: 0.92rem; color: rgba(255,255,255,0.5); }
+
+/* Thin always-on progress rail */
+.ss-progress-rail {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 3px;
+    background: rgba(255,255,255,0.10);
+    z-index: 4;
+    pointer-events: none;
+}
+.ss-progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, #2b9bf4, #6fd1ff);
+    transition: width 0.35s ease;
+}
+.slideshow-overlay.ss-ended .ss-progress-rail { display: none; }
+
+/* Floating auto-hiding control bar */
+.ss-controlbar {
+    position: absolute;
+    left: 50%;
+    bottom: 1.5rem;
+    transform: translate(-50%, 0.6rem);
+    z-index: 5;
+    display: flex;
+    align-items: center;
+    gap: 0.15rem;
+    padding: 0.4rem 0.55rem;
+    background: rgba(24,24,28,0.6);
+    backdrop-filter: blur(16px) saturate(160%);
+    -webkit-backdrop-filter: blur(16px) saturate(160%);
+    border: 1px solid rgba(255,255,255,0.09);
+    border-radius: 999px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.45);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.slideshow-overlay.ss-controls-visible .ss-controlbar {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0);
+}
+.slideshow-overlay.ss-ended .ss-controlbar { display: none; }
+.ss-cbar-btn {
+    width: 2.3rem;
+    height: 2.3rem;
+    border: none;
+    border-radius: 50%;
+    background: transparent;
+    color: rgba(255,255,255,0.88);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.ss-cbar-btn svg { width: 1.15rem; height: 1.15rem; }
+.ss-cbar-btn:hover { background: rgba(255,255,255,0.14); }
+.ss-cbar-btn:disabled { opacity: 0.32; cursor: default; }
+.ss-cbar-btn:disabled:hover { background: transparent; }
+.ss-cbar-exit:hover { background: rgba(230,70,70,0.38); color: #fff; }
+.ss-counter {
+    min-width: 3.6rem;
+    text-align: center;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: rgba(255,255,255,0.78);
+    font-variant-numeric: tabular-nums;
+    padding: 0 0.25rem;
+    user-select: none;
+}
+.ss-cbar-sep {
+    width: 1px;
+    height: 1.3rem;
+    background: rgba(255,255,255,0.14);
+    margin: 0 0.15rem;
 }
 
 /* ===== Slide transition keyframes ===== */
@@ -2672,36 +2846,6 @@ body {
     pointer-events: none;
     line-height: 1.4;
 }
-.slideshow-close, .slideshow-nav {
-    position: absolute;
-    background: rgba(255,255,255,0.12);
-    color: #ffffff;
-    border: none;
-    cursor: pointer;
-    border-radius: 50%;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: background 0.15s;
-}
-.slideshow-close:hover, .slideshow-nav:hover { background: rgba(255,255,255,0.28); }
-.slideshow-close {
-    top: 1rem;
-    right: 1rem;
-    width: 2.4rem;
-    height: 2.4rem;
-    font-size: 1.1rem;
-}
-.slideshow-nav {
-    top: 50%;
-    transform: translateY(-50%);
-    width: 3rem;
-    height: 3rem;
-    font-size: 1.8rem;
-}
-.slideshow-prev { left: 1rem; }
-.slideshow-next { right: 1rem; }
-
 /* ============ Generic modal ============ */
 .modal-overlay {
     display: none;
@@ -2821,6 +2965,36 @@ body {
     font-size: 0.8rem;
     min-height: 1em;
 }
+
+/* ===== UML / Mermaid modal ===== */
+.uml-modal { width: 52rem; }
+.uml-layout {
+    display: flex;
+    gap: 0.75rem;
+    height: 22rem;
+}
+.uml-textarea {
+    flex: 0 0 42%;
+    padding: 0.6rem;
+    border: 1px solid #d6dbe1;
+    border-radius: 4px;
+    font-family: "Roboto Mono", monospace;
+    font-size: 0.82rem;
+    resize: none;
+    white-space: pre;
+}
+.uml-preview-col {
+    flex: 1;
+    border: 1px solid #d6dbe1;
+    border-radius: 4px;
+    background: #fafbfc;
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0.5rem;
+}
+.uml-preview svg { max-width: 100%; height: auto; }
 
 /* ===== Format Picture tab styles ===== */
 /* ===== Format Picture tab ===== */
@@ -3352,6 +3526,46 @@ body {
     white-space: nowrap;
     display: block;
     text-align: center;
+}
+
+/* ============ Symbol Picker ============ */
+.symbol-picker-menu {
+    width: 420px !important;
+    min-width: 420px;
+    max-width: 420px !important;
+    padding: 8px !important;
+    flex-direction: column !important;
+    flex-wrap: nowrap !important;
+    align-items: stretch !important;
+    gap: 6px !important;
+}
+.symbol-picker-grid {
+    overflow-y: auto;
+    display: flex;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 2px;
+    padding: 2px;
+    height: 250px;
+}
+.symbol-grid-btn {
+    width: 34px;
+    height: 34px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    background: none;
+    cursor: pointer;
+    font-size: 1.15rem;
+    color: #333;
+    transition: all 0.12s;
+}
+.symbol-grid-btn:hover {
+    background: #e3f5f8;
+    border-color: #bae6ed;
+    color: #2fa0b0;
 }
 
 /* ============ Shapes Picker ============ */
@@ -4545,4 +4759,218 @@ body {
         -webkit-overflow-scrolling: touch;
     }
     .sb-cluster { flex-shrink: 0; }
+}
+/* ============ Colored ribbon icons ============
+ * Each tool's icon is given a color by category (Clipboard, Shapes,
+ * Tables, ...) instead of inheriting the ribbon's single text color.
+ * The icons themselves stay the same currentColor-stroke SVGs (see
+ * .ribbon-svg-icon above) — :has() targets the wrapping <svg> by which
+ * symbol its <use> references, so this works regardless of how many
+ * places a given icon appears (e.g. Select shows in both Home and Draw).
+ */
+
+/* Clipboard / history */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-copy-obj"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-cut"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-paste"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-redo"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-undo"]) {
+    color: #2f7de1;
+}
+
+/* Slide structure */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-datetime"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-format-bg"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-header-footer"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-landscape"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-new-slide"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-portrait"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-save-slide"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-slide-number"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-slide-size"]) {
+    color: #0e9488;
+}
+
+/* Text formatting & paragraph */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-align-text-center"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-align-text-left"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-align-text-right"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-font-size-dec"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-font-size-inc"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-indent-dec"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-indent-inc"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-list-bullet"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-list-number"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-strikethrough"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-text-glow"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-text-shadow"]) {
+    color: #7c3aed;
+}
+
+/* Shapes & shape styling */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-edit-points"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-line-outline"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-my-shapes"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-save-shape"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-shape-combine"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-shape-fill"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-shape-glow"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-shape-intersect"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-shape-outline"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-shape-reflection"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-shape-shadow"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-shape-subtract"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-shape-union"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-shapes"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-star-shape"]) {
+    color: #e8730c;
+}
+
+/* Tables */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-table"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-tbl-add-col"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-tbl-add-row"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-tbl-border-paint"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-tbl-del-col"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-tbl-del-row"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-tbl-merge"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-tbl-rounded"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-tbl-style"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-tbl-unmerge"]) {
+    color: #15803d;
+}
+
+/* Illustrations & media */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-audio"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-chart"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-icons"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-picture"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-plot"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-screenshot"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-smartart"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-video"]) {
+    color: #d6249f;
+}
+
+/* Text-bearing insert objects */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-code"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-equation"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-latex-block"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-markdown"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-symbol"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-textbox"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-uml"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-wordart"]) {
+    color: #4f46e5;
+}
+
+/* Selection, arrange & transform */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-align-obj-bottom"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-align-obj-center"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-align-obj-left"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-align-obj-middle"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-align-obj-right"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-align-obj-top"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-bring-forward"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-bring-front"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-delete"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-distribute-h"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-distribute-v"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-duplicate"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-flip-h"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-flip-v"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-group"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-position-size"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-properties"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-rotate-ccw"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-rotate-cw"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-select"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-selection-pane"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-send-back"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-send-backward"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-ungroup"]) {
+    color: #dc2626;
+}
+
+/* Picture formatting */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-load-hdr"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-artistic"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-border"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-change"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-colour"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-compress"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-corrections"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-crop"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-effects"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-format-pane"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-remove-bg"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-reset"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pic-transparency"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-play-hdr"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-rotate-left"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-rotate-right"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-save-hdr"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-vignette"]) {
+    color: #0891b2;
+}
+
+/* Background-removal masking */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-brush"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-color"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-eye"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-eye-off"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-invert"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-linear"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-luminance"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-panel"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-radial"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-subject"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-mask-trash"]) {
+    color: #52606d;
+}
+
+/* Animations */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-appear"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-bounce"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-earlier"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-effect"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-fade"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-fly"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-later"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-none"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-pane"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-preview"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-spin"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-anim-zoom"]) {
+    color: #b45309;
+}
+
+/* Transitions */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-trans-apply-all"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-trans-fade"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-trans-none"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-trans-options"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-trans-push"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-trans-wipe"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-trans-zoom"]) {
+    color: #be185d;
+}
+
+/* Draw tab pens */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-eraser"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pen-ballpoint"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pen-brush"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pen-fountain"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pen-highlighter"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-pen-pencil"]) {
+    color: #7c4a1e;
+}
+
+/* Links & insert */
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-import-pptx"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-link"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-object"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-templates"]),
+body.colored-icons .ribbon-svg-icon:has(use[href="#icon-zoom"]) {
+    color: #0284c7;
 }
